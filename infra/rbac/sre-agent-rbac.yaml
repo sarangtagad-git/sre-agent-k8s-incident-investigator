@@ -1,0 +1,89 @@
+# Read-only identity for the SRE Incident Investigator agent.
+#
+# The agent authenticates as this ServiceAccount. It can READ cluster state
+# (pods, events, logs, deployments, nodes, metrics, ...) but CANNOT mutate
+# anything — no create/update/delete/patch, and NO access to Secret values.
+# This is "safety by construction": even if the LLM tries to act, the API
+# server refuses. The only path to a change is the human approval gate (Phase 5).
+#
+# Apply:   kubectl apply -f infra/rbac/sre-agent-rbac.yaml
+# Verify:  kubectl auth can-i --list --as=system:serviceaccount:sre-agent:sre-agent
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sre-agent
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sre-agent
+  namespace: sre-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-agent-readonly
+  labels:
+    app.kubernetes.io/part-of: sre-agent
+rules:
+  # Core investigation signals — get/list/watch ONLY (no write verbs anywhere).
+  # NOTE: 'secrets' is deliberately omitted — the agent must never read secret values.
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - events
+      - services
+      - endpoints
+      - nodes
+      - namespaces
+      - configmaps
+      - persistentvolumeclaims
+      - persistentvolumes
+      - replicationcontrollers
+      - resourcequotas
+      - limitranges
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-agent-readonly
+subjects:
+  - kind: ServiceAccount
+    name: sre-agent
+    namespace: sre-agent
+roleRef:
+  kind: ClusterRole
+  name: sre-agent-readonly
+  apiGroup: rbac.authorization.k8s.io
+---
+# Long-lived token for the SA. Kubernetes >=1.24 no longer auto-creates these,
+# so we request one explicitly. Fine for a local lab; in production you'd use
+# short-lived projected tokens instead.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sre-agent-token
+  namespace: sre-agent
+  annotations:
+    kubernetes.io/service-account.name: sre-agent
+type: kubernetes.io/service-account-token

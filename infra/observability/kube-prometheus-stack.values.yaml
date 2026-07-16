@@ -1,0 +1,51 @@
+# Helm values for kube-prometheus-stack on the k3d/k3s `sre-lab` cluster.
+#
+# Install:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   kubectl create namespace monitoring
+#   helm install kps prometheus-community/kube-prometheus-stack \
+#     -n monitoring -f kube-prometheus-stack.values.yaml
+#
+# k3s embeds kube-controller-manager / kube-scheduler / etcd(kine) / kube-proxy in the
+# single k3s process and does not expose their /metrics on the standard ports/bind
+# addresses. Leaving these enabled just yields permanently-"down" scrape targets, so we
+# disable them. Node/kubelet/cAdvisor + kube-state-metrics + app metrics still work fully.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+# Keep it lean for a local lab on a spinning HDD. Data is emptyDir (non-persistent) —
+# fine for a disposable lab and avoids PVC write pressure on the HDD.
+prometheus:
+  prometheusSpec:
+    retention: 3d
+    scrapeInterval: 30s
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
+      limits:
+        memory: 1Gi
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+
+grafana:
+  # Default login is admin / prom-operator — pinned here so we know it.
+  adminPassword: prom-operator
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+# node-exporter + kube-state-metrics keep their defaults (lightweight).

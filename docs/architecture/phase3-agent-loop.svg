@@ -1,0 +1,114 @@
+<svg viewBox="0 0 920 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="t d" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+<title id="t">Phase 3 — the LangGraph agent loop</title>
+<desc id="d">A LangGraph state machine with nodes gather, correlate, hypothesize, rank, and propose, all sharing an AgentState object. The gather node is a ReAct loop: Claude picks a tool, the tool executes and returns structured evidence, the state updates, and the loop repeats until enough evidence is gathered or the iteration cap is hit.</desc>
+<style>
+  .box{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.3;}
+  .acc{fill:#eef2ff;stroke:#4f46e5;stroke-width:2;}
+  .state{fill:#f1f5f9;stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:5 3;}
+  .inset{fill:#ffffff;stroke:#cbd5e1;stroke-width:1.2;stroke-dasharray:4 4;}
+  .h1{font:700 16px system-ui;fill:#0f172a;}
+  .h2{font:400 11px system-ui;fill:#475569;}
+  .st{font:600 11.5px system-ui;fill:#0f172a;}
+  .stA{font:700 11.5px system-ui;fill:#4338ca;}
+  .sc{font:400 8.7px system-ui;fill:#64748b;}
+  .lbl{font:600 9px system-ui;fill:#475569;}
+  .code{font:600 9px ui-monospace,Menlo,monospace;fill:#0f172a;}
+  .arw{stroke:#94a3b8;stroke-width:1.5;fill:none;}
+  .arwA{stroke:#4f46e5;stroke-width:1.6;fill:none;}
+  .diamond{fill:#eef2ff;stroke:#4f46e5;stroke-width:1.6;}
+</style>
+<defs>
+<marker id="a" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#94a3b8"/></marker>
+<marker id="ai" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4f46e5"/></marker>
+</defs>
+
+<rect x="1" y="1" width="918" height="598" rx="14" fill="#ffffff" stroke="#e5e7eb"/>
+<text x="28" y="32" class="h1">Phase 3 — the LangGraph agent loop (the brain)</text>
+<text x="29" y="52" class="h2">A state machine of nodes; a shared AgentState flows through; Claude decides, the read-only tools execute.</text>
+
+<!-- pipeline -->
+<g>
+  <rect class="box" x="24"  y="72" width="130" height="56" rx="9"/>
+  <text x="89"  y="98"  text-anchor="middle" class="st">① incident in</text>
+  <text x="89"  y="114" text-anchor="middle" class="sc">ns · workload · alert</text>
+  <rect class="acc" x="168" y="72" width="130" height="56" rx="9"/>
+  <text x="233" y="98"  text-anchor="middle" class="stA">② gather</text>
+  <text x="233" y="114" text-anchor="middle" class="sc">ReAct tool loop</text>
+  <rect class="box" x="312" y="72" width="130" height="56" rx="9"/>
+  <text x="377" y="98"  text-anchor="middle" class="st">③ correlate</text>
+  <text x="377" y="114" text-anchor="middle" class="sc">timeline · graph</text>
+  <rect class="box" x="456" y="72" width="130" height="56" rx="9"/>
+  <text x="521" y="98"  text-anchor="middle" class="st">④ hypothesize</text>
+  <text x="521" y="114" text-anchor="middle" class="sc">candidates</text>
+  <rect class="box" x="600" y="72" width="130" height="56" rx="9"/>
+  <text x="665" y="98"  text-anchor="middle" class="st">⑤ rank</text>
+  <text x="665" y="114" text-anchor="middle" class="sc">confidence</text>
+  <rect class="box" x="744" y="72" width="150" height="56" rx="9"/>
+  <text x="819" y="98"  text-anchor="middle" class="st">⑥ propose</text>
+  <text x="819" y="114" text-anchor="middle" class="sc">RCA + fix → gate</text>
+</g>
+<g class="arw" marker-end="url(#a)">
+<path d="M154,100 L166,100"/><path d="M298,100 L310,100"/><path d="M442,100 L454,100"/>
+<path d="M586,100 L598,100"/><path d="M730,100 L742,100"/>
+</g>
+
+<!-- AgentState band -->
+<rect class="state" x="24" y="150" width="870" height="46" rx="9"/>
+<text x="38" y="170" class="lbl">AgentState — the shared memory every node reads &amp; updates:</text>
+<text x="38" y="186" class="code">alert · evidence[] · hypotheses[] · iterations · report</text>
+<g class="arw"><path d="M233,148 L233,128" marker-end="url(#a)"/><path d="M233,150 L233,130" /></g>
+
+<!-- gather zoom inset -->
+<path d="M233,196 L233,222" class="arwA" marker-end="url(#ai)"/>
+<text x="245" y="214" class="sc" fill="#4338ca" font-style="italic">zoom ↓</text>
+<rect class="inset" x="24" y="226" width="870" height="252" rx="10"/>
+<text x="40" y="250" class="stA">② gather — the ReAct loop (Claude decides · tools execute · repeat)</text>
+
+<!-- three boxes -->
+<rect class="acc" x="52"  y="272" width="180" height="62" rx="9"/>
+<text x="142" y="296" text-anchor="middle" class="stA">Claude (LLM)</text>
+<text x="142" y="312" text-anchor="middle" class="sc">5 tools bound · picks next</text>
+<text x="142" y="325" text-anchor="middle" class="sc">tool, or says “done”</text>
+
+<rect class="box" x="322" y="272" width="180" height="62" rx="9"/>
+<text x="412" y="296" text-anchor="middle" class="st">Execute tool</text>
+<text x="412" y="312" text-anchor="middle" class="sc">runs 1 of 5 read-only</text>
+<text x="412" y="325" text-anchor="middle" class="sc">tools (Phase 2)</text>
+
+<rect class="box" x="592" y="272" width="180" height="62" rx="9"/>
+<text x="682" y="296" text-anchor="middle" class="st">Update state</text>
+<text x="682" y="312" text-anchor="middle" class="sc">append typed evidence,</text>
+<text x="682" y="325" text-anchor="middle" class="sc">iterations += 1</text>
+
+<g class="arw" marker-end="url(#a)">
+<path d="M232,303 L320,303"/><path d="M502,303 L590,303"/>
+</g>
+<text x="276" y="294" text-anchor="middle" class="sc">tool_call</text>
+<text x="546" y="294" text-anchor="middle" class="sc">typed result</text>
+
+<!-- decision diamond -->
+<path d="M682,352 L742,382 L682,412 L622,382 Z" class="diamond"/>
+<text x="682" y="379" text-anchor="middle" class="sc" fill="#4338ca">enough?</text>
+<text x="682" y="391" text-anchor="middle" class="sc" fill="#4338ca">/ max iters?</text>
+<path d="M682,334 L682,350" class="arw" marker-end="url(#a)"/>
+
+<!-- loop back: No -->
+<path d="M622,382 C360,382 142,382 142,336" class="arw" marker-end="url(#a)"/>
+<text x="360" y="398" text-anchor="middle" class="sc">No → loop back to Claude (bounded by max_iterations)</text>
+
+<!-- exit: Yes -->
+<path d="M742,382 L810,382" class="arw" marker-end="url(#a)"/>
+<text x="828" y="379" class="lbl">Yes →</text>
+<text x="828" y="393" class="sc">correlate</text>
+
+<!-- tools strip -->
+<rect x="52" y="430" width="720" height="34" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="412" y="451" text-anchor="middle" class="code" font-size="9">get_workload_status · get_pod_events · get_pod_logs · get_rollout_history · query_prometheus</text>
+
+<!-- footer -->
+<text x="28" y="502" class="lbl">Why LangGraph (not a plain while-loop):</text>
+<text x="28" y="520" class="sc">explicit typed state · conditional edges &amp; loops · checkpoints · easy to drop in the human-approval gate node later (Phase 5).</text>
+<text x="28" y="544" class="lbl">Roles:</text>
+<text x="28" y="562" class="sc">Claude = the decision-maker (which tool, when to stop, what it means · model claude-sonnet-5).  Tools = ground-truth facts.</text>
+<text x="28" y="580" class="sc">Every node and tool call is an OpenTelemetry span. The proposed fix is NEVER executed here — that's the Phase 5 gate.</text>
+</svg>

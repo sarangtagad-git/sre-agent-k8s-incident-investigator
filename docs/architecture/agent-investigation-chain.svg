@@ -1,0 +1,93 @@
+<svg viewBox="0 0 1041 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="t d">
+<title id="t">SRE Agent investigation chain</title>
+<desc id="d">A fired alert triggers the agent, which gathers evidence via read-only tools in a ReAct loop, correlates a timeline, hypothesizes and ranks root causes, and proposes a dry-run fix. A human approval gate must approve before any gated remediation. Cross-cutting: OpenTelemetry tracing plus audit log, and a CI-gated evaluation harness.</desc>
+<style>
+  .box{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.3;}
+  .acc{fill:#eef2ff;stroke:#4f46e5;stroke-width:2;}
+  .ttl{font:600 12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;fill:#0f172a;}
+  .accttl{font:700 12px system-ui,sans-serif;fill:#3730a3;}
+  .sub{font:400 9px system-ui,sans-serif;fill:#64748b;}
+  .h1{font:700 21px system-ui,sans-serif;fill:#0f172a;}
+  .h2{font:400 12px system-ui,sans-serif;fill:#64748b;}
+  .band{fill:#f1f5f9;stroke:#cbd5e1;stroke-width:1.1;}
+  .bandtx{font:600 11.5px system-ui,sans-serif;fill:#0f172a;}
+  .panel{fill:#ffffff;stroke:#cbd5e1;stroke-width:1.2;stroke-dasharray:4 4;}
+  .paneltx{font:600 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#334155;}
+  .panelh{font:600 10.5px system-ui,sans-serif;fill:#475569;}
+  .cap{font:400 10.5px system-ui,sans-serif;fill:#475569;}
+  .arw{stroke:#94a3b8;stroke-width:1.4;fill:none;}
+</style>
+<defs><marker id="m" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#94a3b8"/></marker></defs>
+
+<rect x="1" y="1" width="1039" height="498" rx="14" fill="#ffffff" stroke="#e5e7eb"/>
+<text x="32" y="42" class="h1">SRE Agent — Investigation Chain</text>
+<text x="33" y="64" class="h2">From a fired alert to a human-approved fix. Tools return facts; the LLM reasons; a human approves every change.</text>
+
+<!-- stages -->
+<g>
+  <!-- 1 -->
+  <rect class="box" x="8"   y="92" width="115" height="74" rx="9"/>
+  <text class="ttl" x="65.5" y="126" text-anchor="middle">1 Trigger</text>
+  <text class="sub" x="65.5" y="144" text-anchor="middle">alert fires</text>
+  <!-- 2 -->
+  <rect class="box" x="138" y="92" width="115" height="74" rx="9"/>
+  <text class="ttl" x="195.5" y="126" text-anchor="middle">2 Gather</text>
+  <text class="sub" x="195.5" y="144" text-anchor="middle">read-only tools</text>
+  <!-- 3 -->
+  <rect class="box" x="268" y="92" width="115" height="74" rx="9"/>
+  <text class="ttl" x="325.5" y="126" text-anchor="middle">3 Correlate</text>
+  <text class="sub" x="325.5" y="144" text-anchor="middle">timeline + graph</text>
+  <!-- 4 -->
+  <rect class="box" x="398" y="92" width="115" height="74" rx="9"/>
+  <text class="ttl" x="455.5" y="126" text-anchor="middle">4 Hypothesize</text>
+  <text class="sub" x="455.5" y="144" text-anchor="middle">candidates</text>
+  <!-- 5 -->
+  <rect class="box" x="528" y="92" width="115" height="74" rx="9"/>
+  <text class="ttl" x="585.5" y="126" text-anchor="middle">5 Rank</text>
+  <text class="sub" x="585.5" y="144" text-anchor="middle">confidence</text>
+  <!-- 6 -->
+  <rect class="box" x="658" y="92" width="115" height="74" rx="9"/>
+  <text class="ttl" x="715.5" y="126" text-anchor="middle">6 Propose</text>
+  <text class="sub" x="715.5" y="144" text-anchor="middle">dry-run fix</text>
+  <!-- 7 gate accent -->
+  <rect class="acc" x="788" y="92" width="115" height="74" rx="9"/>
+  <text class="accttl" x="845.5" y="126" text-anchor="middle">7 Human Gate</text>
+  <text class="sub" x="845.5" y="144" text-anchor="middle">approve / reject</text>
+  <!-- 8 -->
+  <rect class="box" x="918" y="92" width="115" height="74" rx="9"/>
+  <text class="ttl" x="975.5" y="126" text-anchor="middle">8 Remediate</text>
+  <text class="sub" x="975.5" y="144" text-anchor="middle">gated apply</text>
+</g>
+<!-- arrows between stages -->
+<g class="arw" marker-end="url(#m)">
+  <path d="M123,129 L136,129"/><path d="M253,129 L266,129"/><path d="M383,129 L396,129"/>
+  <path d="M513,129 L526,129"/><path d="M643,129 L656,129"/>
+  <path d="M773,129 L786,129" stroke="#4f46e5"/><path d="M903,129 L916,129" stroke="#4f46e5"/>
+</g>
+<text x="845" y="86" text-anchor="middle" class="sub" fill="#4f46e5">never auto-executes</text>
+
+<!-- tools panel under Gather -->
+<rect class="panel" x="138" y="196" width="360" height="118" rx="9"/>
+<text class="panelh" x="152" y="215">Read-only tools · view RBAC · ReAct loop</text>
+<text class="paneltx" x="152" y="236">get_workload_status()</text>
+<text class="paneltx" x="152" y="254">get_pod_events()</text>
+<text class="paneltx" x="152" y="272">get_pod_logs(previous=…)</text>
+<text class="paneltx" x="152" y="290">get_rollout_history()</text>
+<text class="paneltx" x="152" y="308">query_prometheus(promql)</text>
+<path class="arw" marker-end="url(#m)" d="M195,166 L195,194"/>
+
+<!-- manual mapping caption -->
+<text class="cap" x="516" y="236">Mirrors your manual steps:</text>
+<text class="cap" x="516" y="256">kubectl get pods  →  get_workload_status</text>
+<text class="cap" x="516" y="274">kubectl describe / get events  →  get_pod_events</text>
+<text class="cap" x="516" y="292">kubectl logs --previous  →  get_pod_logs</text>
+<text class="cap" x="516" y="310">kubectl rollout history  →  get_rollout_history</text>
+
+<!-- cross-cutting bands -->
+<rect class="band" x="20" y="346" width="1001" height="38" rx="9"/>
+<text class="bandtx" x="510" y="370" text-anchor="middle">OpenTelemetry trace · token &amp; latency metrics · audit log  —  observe the observer</text>
+<rect class="band" x="20" y="392" width="1001" height="38" rx="9"/>
+<text class="bandtx" x="510" y="416" text-anchor="middle">Eval harness  —  staged incident ↔ ground-truth RCA  —  CI-gated (prove it, don't just demo it)</text>
+
+<text class="cap" x="32" y="458">Safety by construction: the agent runs as a view-only ServiceAccount — it can read everything but change nothing. The only path to a change is Propose → Human approves.</text>
+</svg>

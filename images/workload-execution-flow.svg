@@ -1,0 +1,101 @@
+<svg viewBox="0 0 880 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="t d" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+<title id="t">Execution flow of get_workload_status in workload.py</title>
+<desc id="d">A caller invokes get_workload_status. It loads a read-only client, opens an OpenTelemetry span, calls the Kubernetes API to list pods and deployments (raw objects), then transforms each raw object into a typed Pydantic model via helper functions, and returns a NamespaceWorkloadStatus.</desc>
+<style>
+  .step{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.3;}
+  .acc{fill:#eef2ff;stroke:#4f46e5;stroke-width:2;}
+  .num{fill:#eef2ff;stroke:#4f46e5;stroke-width:1.3;}
+  .numt{font:700 11px system-ui;fill:#4338ca;}
+  .st{font:600 12px system-ui;fill:#0f172a;}
+  .sc{font:400 9.5px ui-monospace,Menlo,monospace;fill:#475569;}
+  .h1{font:700 16px system-ui;fill:#0f172a;}
+  .h2{font:400 11px system-ui;fill:#475569;}
+  .arw{stroke:#94a3b8;stroke-width:1.5;fill:none;}
+  .zt{font:700 11px system-ui;fill:#4338ca;}
+  .zl{font:400 9px system-ui;fill:#475569;}
+  .code{font:600 9.5px ui-monospace,Menlo,monospace;fill:#0f172a;}
+  .raw{fill:#fef2f2;stroke:#e5b4b4;stroke-width:1.1;}
+  .typed{fill:#eef2ff;stroke:#4f46e5;stroke-width:1.4;}
+</style>
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#94a3b8"/></marker></defs>
+
+<rect x="1" y="1" width="878" height="558" rx="14" fill="#ffffff" stroke="#e5e7eb"/>
+<text x="28" y="34" class="h1">workload.py — how get_workload_status() runs</text>
+<text x="29" y="55" class="h2">Entry point is a single function call; it fetches raw cluster data, then transforms it into typed facts.</text>
+
+<!-- left flow, 6 steps -->
+<!-- 1 -->
+<rect class="acc" x="28" y="78" width="360" height="52" rx="9"/>
+<circle class="num" cx="48" cy="94" r="11"/><text x="48" y="98" text-anchor="middle" class="numt">1</text>
+<text x="70" y="100" class="st">Caller invokes the function  ← ENTRY</text>
+<text x="70" y="118" class="sc">get_workload_status("boutique", selector)</text>
+<!-- 2 -->
+<rect class="step" x="28" y="148" width="360" height="52" rx="9"/>
+<circle class="num" cx="48" cy="164" r="11"/><text x="48" y="168" text-anchor="middle" class="numt">2</text>
+<text x="70" y="170" class="st">Get the read-only client</text>
+<text x="70" y="188" class="sc">clients = load_readonly_clients()  → core, apps</text>
+<!-- 3 -->
+<rect class="step" x="28" y="218" width="360" height="52" rx="9"/>
+<circle class="num" cx="48" cy="234" r="11"/><text x="48" y="238" text-anchor="middle" class="numt">3</text>
+<text x="70" y="240" class="st">Open an OpenTelemetry span</text>
+<text x="70" y="258" class="sc">with tracer.start_as_current_span(...)</text>
+<!-- 4 -->
+<rect class="step" x="28" y="288" width="360" height="58" rx="9"/>
+<circle class="num" cx="48" cy="306" r="11"/><text x="48" y="310" text-anchor="middle" class="numt">4</text>
+<text x="70" y="310" class="st">Two READ calls to the K8s API</text>
+<text x="70" y="327" class="sc">list_namespaced_pod(...)  → [raw V1Pod]</text>
+<text x="70" y="340" class="sc">list_namespaced_deployment(...) → [raw]</text>
+<!-- 5 accent -->
+<rect class="acc" x="28" y="364" width="360" height="58" rx="9"/>
+<circle class="num" cx="48" cy="382" r="11"/><text x="48" y="386" text-anchor="middle" class="numt">5</text>
+<text x="70" y="386" class="st">Transform each raw object → typed</text>
+<text x="70" y="403" class="sc">_pod_status() · _container_state()</text>
+<text x="70" y="416" class="sc">_deployment_status()</text>
+<!-- 6 -->
+<rect class="step" x="28" y="440" width="360" height="52" rx="9"/>
+<circle class="num" cx="48" cy="456" r="11"/><text x="48" y="460" text-anchor="middle" class="numt">6</text>
+<text x="70" y="462" class="st">Assemble &amp; return</text>
+<text x="70" y="480" class="sc">return NamespaceWorkloadStatus(...)</text>
+
+<!-- arrows -->
+<g class="arw" marker-end="url(#a)">
+<path d="M208,130 L208,146"/><path d="M208,200 L208,216"/><path d="M208,270 L208,286"/>
+<path d="M208,346 L208,362"/><path d="M208,422 L208,438"/>
+</g>
+
+<!-- right: transform zoom for step 5 -->
+<path d="M388,393 L430,393" class="arw" marker-end="url(#a)"/>
+<rect x="432" y="250" width="420" height="280" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<text x="450" y="276" class="zt">Step 5 in detail — raw → typed (the whole point)</text>
+
+<rect class="raw" x="450" y="292" width="180" height="86" rx="7"/>
+<text x="540" y="310" text-anchor="middle" class="zl" font-weight="600" fill="#b91c1c">raw V1Pod (from API)</text>
+<text x="460" y="328" class="zl">• ~120 nested fields</text>
+<text x="460" y="343" class="zl">• verbose, untyped dict-ish</text>
+<text x="460" y="358" class="zl">• status.conditions[…]</text>
+<text x="460" y="373" class="zl">• container_statuses[…]</text>
+
+<path d="M630,335 L690,335" class="arw" marker-end="url(#a)"/>
+<text x="660" y="326" text-anchor="middle" class="zl" font-style="italic">_pod_status()</text>
+
+<rect class="typed" x="690" y="292" width="150" height="86" rx="7"/>
+<text x="765" y="310" text-anchor="middle" class="zl" font-weight="600" fill="#4338ca">PodStatus</text>
+<text x="700" y="328" class="code">name, ready</text>
+<text x="700" y="343" class="code">restarts</text>
+<text x="700" y="358" class="code">reason</text>
+<text x="700" y="373" class="code">containers[]</text>
+
+<text x="450" y="404" class="zl">Inside, per container:</text>
+<rect class="raw" x="450" y="412" width="180" height="44" rx="7"/>
+<text x="540" y="430" text-anchor="middle" class="zl" font-weight="600" fill="#b91c1c">raw container_status</text>
+<text x="540" y="446" text-anchor="middle" class="zl">state.waiting / terminated / running</text>
+<path d="M630,434 L690,434" class="arw" marker-end="url(#a)"/>
+<text x="660" y="426" text-anchor="middle" class="zl" font-style="italic">_container_state()</text>
+<rect class="typed" x="690" y="412" width="150" height="44" rx="7"/>
+<text x="765" y="430" text-anchor="middle" class="zl" font-weight="600" fill="#4338ca">ContainerState</text>
+<text x="765" y="446" text-anchor="middle" class="code">reason · last_exit_code</text>
+
+<text x="450" y="486" class="zl">→ the LLM later reads clean fields like reason="ImagePullBackOff",</text>
+<text x="450" y="500" class="zl">   not 120 lines of raw YAML. That's why the agent stays reliable.</text>
+<text x="450" y="518" class="zl" font-style="italic">Same pattern in events.py / logs.py / rollout.py.</text>
+</svg>

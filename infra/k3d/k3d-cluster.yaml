@@ -1,0 +1,34 @@
+# k3d cluster for the K8s Incident Investigator project.
+#
+# Why k3d (not kind): this machine's Docker/WSL data lives on a spinning HDD
+# (D:\), whose fsync latency (~150 ms) is far too slow for kind's etcd to
+# bootstrap within kubeadm's timeout. k3s uses SQLite (kine) with a much lighter
+# fsync pattern and no rigid kubeadm init timeout, so it comes up fine on the HDD.
+# (If Docker/WSL are ever moved to the NVMe SSD, kind becomes viable again — the
+# kind config is kept at ../kind/kind-cluster.yaml for that scenario.)
+#
+# Topology: 1 server + 2 agents == 1 control-plane + 2 workers, for
+# production-fidelity events/conditions the agent can reason over.
+#
+# Create:  k3d cluster create --config k3d-cluster.yaml
+# Delete:  k3d cluster delete sre-lab
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: sre-lab
+servers: 1
+agents: 2
+image: docker.io/rancher/k3s:v1.35.5-k3s1
+ports:
+  # Expose traefik ingress on host ports that avoid clashes with other local
+  # services (e.g. Airflow uses 8080). Reach Grafana etc. via these or port-forward.
+  - port: 8081:80
+    nodeFilters:
+      - loadbalancer
+  - port: 8444:443
+    nodeFilters:
+      - loadbalancer
+options:
+  k3d:
+    wait: true
+    timeout: "600s"

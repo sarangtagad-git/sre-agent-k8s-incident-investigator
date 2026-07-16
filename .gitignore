@@ -1,0 +1,24 @@
+# Secrets / credentials — NEVER commit
+.env
+*.kubeconfig
+infra/rbac/sre-agent.kubeconfig
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+
+# Local editor / assistant settings (keep out of the repo)
+.claude/settings.local.json
