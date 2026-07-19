@@ -10,8 +10,8 @@ from .schemas import IncidentContext, RCAReport, Remediation
 __all__ = ["IncidentContext", "RCAReport", "Remediation", "investigate"]
 
 
-def investigate(incident: IncidentContext) -> RCAReport:
+def investigate(incident: IncidentContext, verbose: bool = False) -> RCAReport:
     """Lazy wrapper so importing the package doesn't require anthropic/langgraph."""
     from .graph import investigate as _investigate
 
-    return _investigate(incident)
+    return _investigate(incident, verbose=verbose)

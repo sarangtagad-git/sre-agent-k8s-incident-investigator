@@ -148,14 +148,19 @@ def investigate(
     namespace: str = typer.Argument("boutique"),
     workload: str = typer.Option(None, "--workload", "-w", help="suspected deployment/pod"),
     alert: str = typer.Option(None, "--alert", "-a", help="the alert text / symptom"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="stream each step (reasoning, tool calls) live"),
 ) -> None:
     """Run the agent: gather evidence, correlate, and PROPOSE a fix (never auto-runs it)."""
     from rich.panel import Panel
 
     from .agent import IncidentContext, investigate as run
 
-    with console.status("[bold]investigating…[/] (the agent is calling read-only tools)"):
-        report = run(IncidentContext(namespace=namespace, workload=workload, alert=alert))
+    incident = IncidentContext(namespace=namespace, workload=workload, alert=alert)
+    if verbose:
+        report = run(incident, verbose=True)  # streams steps itself; no spinner
+    else:
+        with console.status("[bold]investigating…[/] (the agent is calling read-only tools)"):
+            report = run(incident)
 
     console.print(Panel(f"[bold]{report.summary}[/bold]", title="Root-cause analysis", border_style="cyan"))
     console.print(f"[bold]Root cause[/] ({report.category}, confidence: {report.confidence}):")
