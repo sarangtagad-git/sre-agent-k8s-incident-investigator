@@ -122,7 +122,8 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
                 tools=ANTHROPIC_TOOLS,
                 tool_choice={"type": "none"},
                 output_format=RCAReport,
-                cache_control={"type": "ephemeral"},
+                # NOTE: messages.parse() does not accept top-level cache_control (create-only).
+                # The single report call isn't worth block-level caching; gather keeps caching.
             )
             if getattr(parsed, "usage", None) is not None:
                 track(parsed.usage)
