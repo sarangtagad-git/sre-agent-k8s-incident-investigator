@@ -206,6 +206,85 @@ def investigate(
         _approval_gate(rem.command, reversible=rem.reversible)
 
 
+@app.command("eval")
+def eval_cmd(
+    incident: str = typer.Option(None, "--incident", "-i", help="run only this incident (by name)"),
+    keep: bool = typer.Option(False, "--keep", help="leave the incident staged (don't revert)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="skip the cost/mutation confirmation"),
+) -> None:
+    """Regression-test the agent: stage each incident, run it, assert the RCA, then revert.
+
+    Costs ~$0.22 per incident and mutates the cluster, so it is a deliberate command — not
+    part of the (free, cluster-less) unit test suite. Exits non-zero if any incident fails.
+    """
+    import time
+
+    from rich.table import Table as _Table
+
+    from .agent import investigate as run
+    from .evals import INCIDENTS, Check, incident_passed, score
+    from .remediation import run_kubectl
+
+    incidents = [i for i in INCIDENTS if incident in (None, i.name)]
+    if not incidents:
+        names = ", ".join(i.name for i in INCIDENTS)
+        console.print(f"[red]No incident named {incident!r}.[/] Known: {names}")
+        raise typer.Exit(code=2)
+
+    if not yes:
+        console.print(
+            f"[yellow]This stages/reverts {len(incidents)} real incident(s) and runs the live "
+            f"agent (~$0.22 each).[/]"
+        )
+        if not typer.confirm("Proceed?", default=False):
+            raise typer.Abort()
+
+    results: list[tuple[str, bool, list, float]] = []
+    for inc in incidents:
+        console.rule(f"[bold]{inc.name}[/] — {inc.description}")
+        for args in inc.stage:
+            run_kubectl(args)
+        console.print(f"[dim]staged; waiting {inc.wait_seconds}s for the failure to surface…[/]")
+        time.sleep(inc.wait_seconds)
+        try:
+            t0 = time.perf_counter()
+            report = run(inc.context)
+            dt = time.perf_counter() - t0
+            checks = score(report, inc)
+            ok = incident_passed(checks)
+            console.print(
+                f"  RCA: [bold]{report.category}[/] · {report.confidence_score:.2f} — "
+                f"{report.root_cause[:90]}…"
+            )
+            for c in checks:
+                mark = "[green]✓[/]" if c.passed else "[red]✗[/]"
+                tag = "[dim](critical)[/]" if c.critical else "[dim](info)[/]"
+                console.print(f"    {mark} {c.name} {tag}  [dim]{c.detail}[/]")
+            results.append((inc.name, ok, checks, dt))
+        except Exception as e:  # noqa: BLE001 — surface any run failure as an incident failure
+            console.print(f"  [red]run error: {e}[/]")
+            results.append((inc.name, False, [Check("run", False, True, str(e))], 0.0))
+        finally:
+            if not keep:
+                for args in inc.revert:
+                    run_kubectl(args)
+                console.print("[dim]reverted.[/]")
+
+    console.rule("[bold]Scorecard[/]")
+    t = _Table()
+    for col in ("incident", "result", "latency"):
+        t.add_column(col)
+    for name, ok, _checks, dt in results:
+        t.add_row(name, "[green]PASS[/]" if ok else "[red]FAIL[/]", f"{dt:.1f}s")
+    console.print(t)
+
+    failed = [name for name, ok, _c, _dt in results if not ok]
+    if failed:
+        console.print(f"[red]FAILED: {', '.join(failed)}[/]")
+        raise typer.Exit(code=1)
+    console.print("[green]All incidents passed.[/]")
+
+
 def _approval_gate(command: str, reversible: bool = True) -> None:
     """The Phase-5 gate: allowlist -> server dry-run -> human confirm -> apply."""
     from rich.panel import Panel
