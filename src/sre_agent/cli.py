@@ -149,8 +149,17 @@ def investigate(
     workload: str = typer.Option(None, "--workload", "-w", help="suspected deployment/pod"),
     alert: str = typer.Option(None, "--alert", "-a", help="the alert text / symptom"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="stream each step (reasoning, tool calls) live"),
+    execute: bool = typer.Option(
+        False, "--execute", "-x",
+        help="after the RCA, open the approval gate to (dry-run, confirm, then) apply the fix",
+    ),
 ) -> None:
-    """Run the agent: gather evidence, correlate, and PROPOSE a fix (never auto-runs it)."""
+    """Run the agent: gather evidence, correlate, and PROPOSE a fix.
+
+    By default the fix is only proposed. With --execute, the proposed command is checked
+    against the safety allowlist, server-dry-run'd, and applied only after you confirm —
+    using your own kubectl context, never the agent's read-only identity.
+    """
     from rich.panel import Panel
 
     from .agent import IncidentContext, investigate as run
@@ -192,6 +201,60 @@ def investigate(
             border_style="yellow",
         )
     )
+
+    if execute:
+        _approval_gate(rem.command, reversible=rem.reversible)
+
+
+def _approval_gate(command: str, reversible: bool = True) -> None:
+    """The Phase-5 gate: allowlist -> server dry-run -> human confirm -> apply."""
+    from rich.panel import Panel
+
+    from .remediation import run_kubectl, validate_remediation
+
+    decision = validate_remediation(command)
+    if not decision.allowed:
+        console.print(
+            Panel(
+                f"[bold]{decision.reason}[/]\n\n[dim]$ {command}[/]",
+                title="⛔  Blocked by the safety gate — not executed",
+                border_style="red",
+            )
+        )
+        return
+
+    # Preview: server-side dry-run of the mutating command(s) — validates, changes nothing.
+    console.print("\n[bold]Dry-run[/] [dim](server-side validation, no changes made):[/]")
+    for args in decision.mutating:
+        rc, out, err = run_kubectl(args, dry_run=True)
+        console.print(f"  [green]$ {' '.join(args)} --dry-run=server[/]")
+        for line in (out or err or "(no output)").strip().splitlines():
+            console.print(f"    [dim]{line}[/]")
+        if rc != 0:
+            console.print("[red]Dry-run failed — aborting; no changes made.[/]")
+            return
+
+    if not reversible:
+        console.print("[yellow]⚠  This action is marked NOT easily reversible.[/]")
+    if not typer.confirm("\nApply this change to the cluster now?", default=False):
+        console.print("[yellow]Aborted by human — no changes made.[/]")
+        return
+
+    # Apply the mutating command(s) for real, then run any read-only verification steps.
+    console.print("\n[bold]Applying…[/]")
+    for args in decision.mutating:
+        rc, out, err = run_kubectl(args)
+        console.print(f"  [green]$ {' '.join(args)}[/]")
+        console.print(f"    {(out or err).strip()}")
+        if rc != 0:
+            console.print("[red]Command failed — stopping.[/]")
+            return
+    for args in decision.readonly:
+        rc, out, err = run_kubectl(args)
+        console.print(f"  [dim]$ {' '.join(args)}[/]")
+        for line in (out or err).strip().splitlines():
+            console.print(f"    [dim]{line}[/]")
+    console.print("\n[green]✓ Applied.[/] Re-run `sre-agent status` to confirm recovery.")
 
 
 if __name__ == "__main__":
