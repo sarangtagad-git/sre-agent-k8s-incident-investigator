@@ -1,8 +1,9 @@
 """The investigation agent (Phase 3+).
 
-A LangGraph state machine: gather (ReAct tool loop) -> report (structured RCA).
-Claude drives tool selection over the read-only Phase-2 tools; the proposed
-remediation must pass the human approval gate (Phase 5) before anything runs.
+A LangGraph state machine: gather (ReAct tool loop) -> correlate -> hypothesize ->
+rank -> propose (structured RCA). Claude drives tool selection over the read-only
+Phase-2 tools; the proposed remediation must pass the human approval gate (Phase 5)
+before anything runs.
 """
 
 from .schemas import IncidentContext, RCAReport, Remediation

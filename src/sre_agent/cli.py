@@ -163,7 +163,10 @@ def investigate(
             report = run(incident)
 
     console.print(Panel(f"[bold]{report.summary}[/bold]", title="Root-cause analysis", border_style="cyan"))
-    console.print(f"[bold]Root cause[/] ({report.category}, confidence: {report.confidence}):")
+    console.print(
+        f"[bold]Root cause[/] ({report.category}, confidence: {report.confidence} "
+        f"· {report.confidence_score:.2f}):"
+    )
     console.print(f"  {report.root_cause}\n")
     console.print(f"[bold]Impact:[/] {report.impact}\n")
 
@@ -171,6 +174,10 @@ def investigate(
         console.print("[bold]Evidence:[/]")
         for e in report.evidence:
             console.print(f"  • {e}")
+    if report.alternatives:
+        console.print("\n[bold]Alternatives considered:[/]")
+        for a in report.alternatives:
+            console.print(f"  • [dim]{a}[/]")
     if report.ruled_out:
         console.print("\n[bold]Ruled out:[/]")
         for r in report.ruled_out:

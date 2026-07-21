@@ -33,35 +33,78 @@ class Remediation(BaseModel):
     reversible: bool = True
 
 
+# The incident taxonomy, shared by the report and each hypothesis so ranking is apples-to-apples.
+Category = Literal[
+    "workload",
+    "config",
+    "scheduling",
+    "rollout",
+    "networking",
+    "dependency",
+    "storage",
+    "node",
+    "saturation",
+    "unknown",
+]
+
+
+class TimelineEntry(BaseModel):
+    """One event on the incident timeline (correlate node)."""
+
+    when: str  # timestamp or relative ("~5m ago", "revision 8") — as seen in evidence
+    what: str  # what happened, grounded in a tool result
+
+
+class Correlation(BaseModel):
+    """The correlate node's output: how the evidence fits together in time and topology."""
+
+    timeline: list[TimelineEntry] = Field(default_factory=list)
+    # Service dependency chain from the alerting entrypoint to the failing leaf (leaf LAST),
+    # e.g. ["frontend", "cartservice", "redis-cart"]. Empty for non-cascade incidents.
+    dependency_chain: list[str] = Field(default_factory=list)
+    what_changed: str  # the trigger — the change/event that most plausibly started this
+    summary: str
+
+
+class Hypothesis(BaseModel):
+    """One candidate root cause with a confidence score (hypothesize node)."""
+
+    cause: str
+    category: Category
+    confidence: float  # 0.0–1.0 — how well the evidence supports THIS cause
+    supporting: list[str] = Field(default_factory=list)  # evidence for
+    against: list[str] = Field(default_factory=list)  # evidence against / caveats
+
+
+class Hypotheses(BaseModel):
+    """Wrapper so hypothesize can emit a list via structured output."""
+
+    hypotheses: list[Hypothesis] = Field(default_factory=list)
+
+
 class RCAReport(BaseModel):
     """The agent's structured root-cause analysis (its final output)."""
 
     summary: str
     root_cause: str
-    category: Literal[
-        "workload",
-        "config",
-        "scheduling",
-        "rollout",
-        "networking",
-        "dependency",
-        "storage",
-        "node",
-        "saturation",
-        "unknown",
-    ]
-    confidence: Literal["high", "medium", "low"]
+    category: Category
+    confidence: Literal["high", "medium", "low"]  # human-readable band
+    confidence_score: float = 0.0  # 0.0–1.0, from the top-ranked hypothesis
     evidence: list[str] = Field(default_factory=list)
     ruled_out: list[str] = Field(default_factory=list)
+    # Other causes considered and rejected, each with its score, e.g. "config drift (0.15): …".
+    alternatives: list[str] = Field(default_factory=list)
     impact: str
     remediation: Remediation
 
 
 class AgentState(TypedDict):
-    """LangGraph state that flows through gather -> report."""
+    """LangGraph state flowing through gather -> correlate -> hypothesize -> rank -> propose."""
 
     incident: IncidentContext
     messages: list  # Anthropic conversation (content blocks preserved)
     evidence: list[ToolRecord]
     iterations: int
+    correlation: Correlation | None
+    hypotheses: list[Hypothesis]  # ranked (highest confidence first) after the rank node
     report: RCAReport | None
