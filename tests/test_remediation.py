@@ -59,6 +59,27 @@ def test_rejects_protected_namespace():
     assert "kube-system" in d.reason
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "kubectl -n kube-system scale deploy/coredns --replicas=0",   # -n x
+        "kubectl --namespace=kube-system scale deploy/coredns --replicas=0",  # --namespace=x
+        "kubectl -n=kube-system scale deploy/coredns --replicas=0",   # -n=x
+        "kubectl -nkube-system scale deploy/coredns --replicas=0",    # glued -nx (was a bypass)
+    ],
+)
+def test_rejects_protected_namespace_in_all_flag_forms(cmd):
+    d = validate_remediation(cmd)
+    assert not d.allowed
+    assert "kube-system" in d.reason
+
+
+def test_allows_glued_namespace_short_form():
+    # The glued short form must still parse for legit namespaces (regression guard).
+    d = validate_remediation("kubectl -nboutique scale deployment/redis-cart --replicas=1")
+    assert d.allowed and d.mutating
+
+
 def test_rejects_kubeconfig_redirect():
     d = validate_remediation("kubectl -n boutique scale deploy/x --replicas=1 --kubeconfig=/tmp/evil")
     assert not d.allowed

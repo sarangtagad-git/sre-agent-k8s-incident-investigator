@@ -86,11 +86,13 @@ def _verb_key(tokens: list[str]) -> tuple[str, ...]:
 def _namespace(tokens: list[str]) -> str | None:
     for i, tok in enumerate(tokens):
         if tok in ("-n", "--namespace") and i + 1 < len(tokens):
-            return tokens[i + 1]
+            return tokens[i + 1]  # space form: -n boutique
         if tok.startswith("--namespace="):
-            return tok.split("=", 1)[1]
+            return tok.split("=", 1)[1]  # --namespace=boutique
         if tok.startswith("-n="):
-            return tok.split("=", 1)[1]
+            return tok.split("=", 1)[1]  # -n=boutique
+        if tok.startswith("-n") and len(tok) > 2 and not tok.startswith("-n="):
+            return tok[2:]  # glued short form: -nboutique / -nkube-system
     return None
 
 
