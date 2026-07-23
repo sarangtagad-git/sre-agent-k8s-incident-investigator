@@ -187,10 +187,6 @@ def investigate(
         console.print("\n[bold]Alternatives considered:[/]")
         for a in report.alternatives:
             console.print(f"  • [dim]{a}[/]")
-    if report.ruled_out:
-        console.print("\n[bold]Ruled out:[/]")
-        for r in report.ruled_out:
-            console.print(f"  • {r}")
 
     rem = report.remediation
     console.print(

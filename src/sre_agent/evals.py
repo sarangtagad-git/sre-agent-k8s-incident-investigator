@@ -42,7 +42,7 @@ class Check:
 
 def _haystack(report: RCAReport) -> str:
     parts = [report.summary, report.root_cause, report.impact]
-    parts += report.evidence + report.ruled_out + report.alternatives
+    parts += report.evidence + report.alternatives
     return " ".join(parts).lower()
 
 

@@ -15,6 +15,9 @@ streams to the console. The agent is read-only; the proposed fix is never execut
 
 from __future__ import annotations
 
+import json
+import re
+
 import anthropic
 from langgraph.graph import END, START, StateGraph
 from rich.console import Console
@@ -75,28 +78,59 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
         totals["output"] += out
         say(f"     [dim]tokens: in={inp}  cache(write={cw} read={cr})  out={out}[/]")
 
-    def analyze(messages, instruction, output_format):
-        """One structured-output analysis call over the gathered evidence (no new tools).
-
-        Uses messages.parse for reliable schema validation. tools + tool_choice=none keep the
-        historical tool_use/tool_result blocks valid while forbidding any further tool calls.
-
-        Not cached: parse() can't take cache_control, so each analysis call re-processes the
-        gathered transcript at full price — the dominant per-run cost. A messages.create +
-        output_config.format rewrite was tried to enable caching, but structured outputs bake
-        the (per-call) JSON schema into the cacheable prefix, which breaks prefix-match and
-        made it *more* expensive. Cheaper analysis is future work (see the notes in the PR).
-        """
-        parsed = client.messages.parse(
+    def _analyze_call(messages, ask, force_no_tools=False):
+        # Mirror gather's call shape (system/tools/thinking/cache_control, tool_choice left
+        # at the default "auto") so the request prefix matches gather's cached prefix and
+        # this call only pays full price for its own newly-appended tail, not the whole
+        # transcript. A messages.parse()/output_config.format rewrite was tried instead (to
+        # get schema-validated JSON) but each call has a DIFFERENT schema, so the schema gets
+        # baked into the prefix and breaks the cache match across calls — cost went UP. Hence:
+        # ask for JSON in the prompt and parse it by hand.
+        kwargs = dict(
             model=settings.agent_model,
-            max_tokens=4000,
-            messages=messages + [{"role": "user", "content": instruction}],
+            max_tokens=8000,
+            system=SYSTEM_PROMPT,
+            thinking=thinking,
+            output_config={"effort": settings.agent_effort},
             tools=ANTHROPIC_TOOLS,
-            tool_choice={"type": "none"},
-            output_format=output_format,
+            messages=messages + [{"role": "user", "content": ask}],
+            cache_control={"type": "ephemeral"},
         )
-        track(getattr(parsed, "usage", None))
-        return parsed.parsed_output
+        if force_no_tools:
+            kwargs["tool_choice"] = {"type": "none"}
+        resp = client.messages.create(**kwargs)
+        track(resp.usage)
+        return resp
+
+    def _extract_json_object(text: str) -> dict:
+        text = text.strip()
+        fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
+        if fence:
+            text = fence.group(1).strip()
+        return json.loads(text)
+
+    def analyze(messages, instruction, model_cls):
+        """One structured-output analysis call over the gathered evidence (no new tools)."""
+        schema_hint = json.dumps(model_cls.model_json_schema())
+        ask = (
+            f"{instruction}\n\nDo not call any tools. Respond with ONLY a single JSON "
+            "object (no markdown fences, no prose before or after) matching this JSON "
+            f"schema:\n{schema_hint}"
+        )
+        resp = _analyze_call(messages, ask)
+        if resp.stop_reason == "tool_use":
+            say("     [dim](model reached for a tool instead of JSON — forcing tool_choice=none)[/]")
+            resp = _analyze_call(messages, ask, force_no_tools=True)
+
+        text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        try:
+            return model_cls.model_validate(_extract_json_object(text))
+        except (json.JSONDecodeError, ValueError) as exc:
+            say(f"     [dim](JSON parse failed: {exc} — retrying with a firmer instruction)[/]")
+            firm_ask = ask + "\n\nYour previous reply was not valid JSON. Output ONLY the JSON object, nothing else."
+            resp = _analyze_call(messages, firm_ask, force_no_tools=True)
+            text = "".join(b.text for b in resp.content if b.type == "text").strip()
+            return model_cls.model_validate(_extract_json_object(text))
 
     def gather(state: AgentState) -> dict:
         with _tracer.start_as_current_span("agent.gather"):

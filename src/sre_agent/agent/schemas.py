@@ -91,7 +91,6 @@ class RCAReport(BaseModel):
     confidence: Literal["high", "medium", "low"]  # human-readable band
     confidence_score: float = 0.0  # 0.0–1.0, from the top-ranked hypothesis
     evidence: list[str] = Field(default_factory=list)
-    ruled_out: list[str] = Field(default_factory=list)
     # Other causes considered and rejected, each with its score, e.g. "config drift (0.15): …".
     alternatives: list[str] = Field(default_factory=list)
     impact: str
