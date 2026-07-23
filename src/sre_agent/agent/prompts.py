@@ -47,6 +47,24 @@ CORRELATE_INSTRUCTION = (
     "Do not diagnose yet; just lay out how the facts fit together."
 )
 
+CATEGORY_GUIDE = (
+    "Category guide — pick exactly one, the two easiest to confuse are dependency vs "
+    "scheduling:\n"
+    "- dependency: a Ready/healthy pod cannot reach something else it needs (another "
+    "service, a DB, an external API) — including when that something else is a "
+    "Deployment someone scaled to 0. The failure is one hop downstream of the pod "
+    "reporting the error.\n"
+    "- scheduling: a pod is Pending and CANNOT BE PLACED on any node — insufficient "
+    "CPU/memory, taints/tolerations, node affinity/anti-affinity. Does NOT apply when "
+    "replicas were deliberately set to 0 or a rollout is in progress — there is no "
+    "placement attempt to fail in that case.\n"
+    "- workload: the failing pod's OWN spec/definition is broken (bad command, bad env "
+    "var, crashes on startup) — use this for the workload's own investigation, not for "
+    "a caller reporting that workload as unavailable (that caller's report is dependency).\n"
+    "- rollout: a new image/revision introduced the break; the fix is a rollout undo.\n"
+    "- config, networking, storage, node, saturation, unknown: as named."
+)
+
 HYPOTHESIZE_INSTRUCTION = (
     "Now list the candidate root causes as competing hypotheses — plural. Even when one "
     "looks obvious, name at least one alternative you can rule out, so the ranking is "
@@ -54,7 +72,7 @@ HYPOTHESIZE_INSTRUCTION = (
     "how strongly the evidence supports THAT cause, the supporting evidence, and any "
     "evidence against it. Distinguish cause from symptom: a hypothesis that only explains "
     "a downstream symptom must score lower than one that explains the trigger. Ground "
-    "every point in a tool result; do not invent cluster state."
+    "every point in a tool result; do not invent cluster state.\n\n" + CATEGORY_GUIDE
 )
 
 REPORT_INSTRUCTION = (
@@ -64,7 +82,7 @@ REPORT_INSTRUCTION = (
     "else low). List the other hypotheses in `alternatives` as \"cause (score): why "
     "rejected\". Cite specific evidence (event reasons, log lines, image tags, metric "
     "values). Propose a single remediation as the exact kubectl command a human would run "
-    "— remember it must be approved by a human before anyone runs it."
+    "— remember it must be approved by a human before anyone runs it.\n\n" + CATEGORY_GUIDE
 )
 
 
