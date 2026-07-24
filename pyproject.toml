@@ -30,6 +30,9 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
 ]
+dashboard = [
+    "streamlit>=1.38",
+]
 
 [project.scripts]
 sre-agent = "sre_agent.cli:app"

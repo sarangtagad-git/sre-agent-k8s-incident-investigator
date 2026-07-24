@@ -1,4 +1,4 @@
-.PHONY: help install rbac kubeconfig verify-rbac test lint doctor
+.PHONY: help install rbac kubeconfig verify-rbac test lint doctor dashboard
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n", $$1, $$2}'
@@ -28,3 +28,6 @@ lint:  ## Ruff lint
 
 doctor:  ## Verify the agent can read the cluster read-only
 	. .venv/bin/activate && sre-agent doctor
+
+dashboard:  ## Launch the Streamlit run-history dashboard
+	. .venv/bin/activate && streamlit run src/sre_agent/dashboard.py
