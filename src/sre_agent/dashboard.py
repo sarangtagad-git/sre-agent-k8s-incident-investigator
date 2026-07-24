@@ -42,6 +42,11 @@ import streamlit as st
 from sre_agent import history_store
 
 CSS = """
+/* Typography: IBM Plex Sans for UI, IBM Plex Mono for code/ids/token readouts.
+   Webfont with a system fallback — offline the dashboard degrades to Segoe/system
+   sans, nothing breaks. @import must precede every other rule in the sheet. */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
 :root {
   --ink: #1b2420; --paper: #f4f6f4; --card: #ffffff; --border: #dfe6e1; --muted: #6b7772;
   --ember: #c1622b; --ember-soft: #f6e2d3; --moss: #3f6e5c; --moss-soft: #e1ece7;
@@ -51,7 +56,7 @@ CSS = """
 .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] { background: var(--paper); }
 [data-testid="stMainBlockContainer"] { padding-top: 1.5rem; max-width: 1260px; }
 html, body, [data-testid="stAppViewContainer"] * {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   color: var(--ink);
 }
 
@@ -146,7 +151,7 @@ html, body, [data-testid="stAppViewContainer"] * {
 /* remediation */
 .fixbox { background: var(--moss-soft); border-radius: 9px; padding: 0.8rem 0.95rem; font-size: 0.8rem; }
 .fixbox .why { color: var(--muted); font-size: 0.76rem; margin-top: 0.25rem; }
-.fixbox code { display: block; margin-top: 0.5rem; color: var(--moss); font-size: 0.78rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(63,110,92,0.08); padding: 0.45rem 0.6rem; border-radius: 6px; }
+.fixbox code { display: block; margin-top: 0.5rem; color: var(--moss); font-size: 0.78rem; font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(63,110,92,0.08); padding: 0.45rem 0.6rem; border-radius: 6px; }
 .applied { display: flex; align-items: flex-start; gap: 0.55rem; margin-top: 0.65rem; font-size: 0.78rem; }
 .applied .why2 { color: var(--muted); }
 
@@ -197,6 +202,33 @@ div[data-testid="stButton"] button[kind="primary"] p,
 [data-testid="stBaseButton-primary"] p { color: #ffffff; }
 div[data-testid="stButton"] button[kind="primary"]:hover,
 [data-testid="stBaseButton-primary"]:hover { background: #a9541f; border-color: #a9541f; }
+
+/* ---- Plex refinements (last so they win ties): mono accents, air, legibility ---- */
+/* Streamlit's own theme styles headings with its "Source Sans" at higher specificity
+   than the container-wide * rule — restate the family on headings explicitly. */
+.topbar h1, .hdr h2, .scard h3, [data-testid="stAppViewContainer"] h1,
+[data-testid="stAppViewContainer"] h2, [data-testid="stAppViewContainer"] h3 {
+  font-family: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif !important;
+}
+.topbar h1 { letter-spacing: -0.02em; }
+.hdr h2 { font-size: 1.4rem; letter-spacing: -0.015em; }
+.hdr .p-sub { font-size: 0.85rem; line-height: 1.55; }
+.p-num, .inum {
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; letter-spacing: 0.05em;
+}
+.tok-line, .ev .args {
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.71rem;
+}
+.row .who { letter-spacing: -0.005em; }
+.row .sub { font-size: 0.79rem; }
+.ev, .tl, .chk { font-size: 0.8rem; line-height: 1.5; }
+.hyp .hyp-top { font-size: 0.8rem; }
+.hyp .hyp-txt { font-size: 0.78rem; line-height: 1.45; }
+.verdict { font-size: 0.84rem; line-height: 1.55; }
+.impact { font-size: 0.82rem; line-height: 1.5; }
+.fixbox { font-size: 0.82rem; line-height: 1.5; }
+.scard .scard-label, .section-label, .col-head, .kpi .label { letter-spacing: 0.07em; }
+.kpi .value { font-size: 1.6rem; }
 """
 
 # category slug -> human-readable incident phrase
