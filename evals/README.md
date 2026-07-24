@@ -12,7 +12,7 @@ against it:
 ## Running it
 
 ```bash
-sre-agent eval                 # all incidents (asks to confirm — mutates cluster, ~$0.22 each)
+sre-agent eval                 # all incidents (asks to confirm — mutates cluster, ~$0.15 each)
 sre-agent eval -i cascade      # just one
 sre-agent eval -y --keep       # skip the prompt; leave the incident staged
 ```

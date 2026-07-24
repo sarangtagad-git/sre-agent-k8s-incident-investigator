@@ -1,42 +1,58 @@
 # Kubernetes Incident Investigator (SRE Agent)
 
 An autonomous agent that investigates Kubernetes incidents when an alert fires —
-it pulls evidence, correlates it, produces a root-cause hypothesis, and **proposes**
-remediation behind a **human-in-the-loop approval gate**. It authenticates as a
-**read-only** identity and can never mutate the cluster itself.
+it pulls evidence, correlates it, ranks competing root-cause hypotheses, and
+**proposes** remediation behind a **human-in-the-loop approval gate**. It authenticates
+as a **read-only** identity and can never mutate the cluster itself; a regression suite
+stages real incidents against it and scores the RCA before any of this is trusted.
 
-> Learn-in-public project. Full design brief: [`k8s-incident-investigator-brief.md`](k8s-incident-investigator-brief.md).
-> Architecture diagrams: [`docs/architecture/`](docs/architecture/).
+> Learn-in-public project — built and hardened in public, including the parts that
+> didn't work the first time. Full design brief: [`k8s-incident-investigator-brief.md`](k8s-incident-investigator-brief.md).
+> Architecture diagrams: [`docs/architecture/`](docs/architecture/). Demo video: coming soon.
 
 ## Why it's built this way
 - **Safety by construction** — a view-only ServiceAccount (RBAC), not just prompt rules.
+  The agent's own Kubernetes credentials cannot delete a pod or read a Secret, full stop.
 - **Tools return facts, the LLM reasons** — typed, structured evidence; no scraping.
-- **Observe the observer** — OpenTelemetry traces every step and tool call.
-- **Provably correct** — an eval harness stages real incidents and scores the RCA in CI.
+- **Cause, not just symptom** — an explicit `correlate → hypothesize → rank → propose`
+  pipeline scores competing explanations (each with supporting/against evidence) and only
+  writes up the top-ranked one, instead of jumping at the first plausible story.
+- **A human approves every mutation** — `propose` never executes anything. `--execute`
+  runs the fix through an allowlist validator, a server-side dry-run, and an explicit
+  confirmation, applied with *your* kubectl identity, never the agent's.
+- **Provably correct** — an eval harness stages real incidents and scores the RCA against
+  ground truth; it has already caught (and driven the fix for) a real classification bug.
+- **Cost-aware, not just cost-blind** — every LLM call is priced and shown to you; a
+  caching bug that made analysis 50% *more* expensive was found and fixed by reading the
+  numbers, not by guessing.
+- **Observe the observer** — OpenTelemetry spans are wired in from day one so tracing has
+  somewhere to plug in as the project grows (not yet exported anywhere — see Known gaps).
 
 ## Architecture
 
 When an alert fires (or you run the CLI), the agent runs a **LangGraph** state machine.
-In `gather` it drives a bounded **ReAct loop** — Claude picks a read-only tool, the tool
-runs, the result is fed back — until it has enough evidence; then it emits a **structured
-root-cause report** with a *proposed* fix that a human must approve. Every tool call is an
-OpenTelemetry span.
+`gather` drives a bounded **ReAct loop** — Claude picks a read-only tool, the tool runs,
+the result feeds back — until there's enough evidence. `correlate` lays out a timeline and
+(for cascades) a service dependency chain. `hypothesize` names competing root causes, each
+scored 0–1 with evidence for and against. `rank` is plain Python — sort by confidence, no
+LLM call. `propose` writes the final RCA on the top hypothesis with a single gated fix.
+Every node and tool call is an OpenTelemetry span.
 
 ```
 Alert / CLI ─▶ gather (Claude ⇄ read-only tools) ─▶ correlate ─▶ hypothesize ─▶ rank ─▶ propose ─▶ human approval gate
-                     ▲ typed evidence                                                    (never auto-executes)
+                     ▲ typed evidence                                                              (never auto-executes)
 ```
 
 Diagrams (in [`docs/architecture/`](docs/architecture/) — click to view):
-- [Investigation chain](docs/architecture/agent-investigation-chain.svg) — alert → gather → RCA → gated fix
-- [Agent loop (LangGraph)](docs/architecture/phase3-agent-loop.svg) — the state machine + ReAct loop
+- [Investigation chain](docs/architecture/agent-investigation-chain.svg) — alert → gather → RCA → human gate → gated remediation
+- [Agent loop (LangGraph)](docs/architecture/phase3-agent-loop.svg) — the full gather/correlate/hypothesize/rank/propose state machine
 - [Read-only tools](docs/architecture/phase2-tools.svg) — the five evidence-gathering tools
 - [Agent package](docs/architecture/phase3-agent-files.svg) — how the `src/sre_agent/agent/` files collaborate
 - [Tool execution flow](docs/architecture/workload-execution-flow.svg) — raw Kubernetes objects → typed facts
 
 ## Local stack
 - **Cluster:** k3d / k3s (`sre-lab`) — see [`infra/k3d/`](infra/k3d/). (k3d not kind because
-  the dev disk is a slow HDD; k3s's SQLite datastore tolerates it.)
+  the dev disk is a slow HDD; k3s's SQLite datastore tolerates it — see the build log below.)
 - **Observability:** kube-prometheus-stack — see [`infra/observability/`](infra/observability/).
 - **Demo app ("patient"):** Google Online Boutique — see [`infra/apps/online-boutique/`](infra/apps/online-boutique/).
 - **Agent:** Python + LangGraph + Claude + read-only Kubernetes/Prometheus tools — [`src/sre_agent/`](src/sre_agent/).
@@ -44,12 +60,14 @@ Diagrams (in [`docs/architecture/`](docs/architecture/) — click to view):
 ## Status & roadmap
 - [x] **1 · Scaffold + read-only RBAC** — view-only ServiceAccount, enforced by the API server
 - [x] **2 · Read-only tools** — workload · events · logs (`--previous`) · rollout history · PromQL (typed + tested)
-- [x] **3 · Agent loop (LangGraph)** — `gather → report` with Claude (adaptive thinking) + structured RCA _(v0)_
-- [ ] **4 · Correlation + confidence** — split `correlate/hypothesize/rank`; solve the dependency cascade
-- [ ] **5 · Safety gate** — propose → human approves → allowlisted, dry-run remediation
-- [ ] **6 · Eval harness** — stage each incident, assert the RCA vs ground truth, CI-gated
+- [x] **3 · Agent loop (LangGraph)** — `gather → report` with Claude (adaptive thinking) + structured RCA
+- [x] **4 · Correlation + confidence** — explicit `correlate/hypothesize/rank/propose`; solves the dependency cascade
+- [x] **5 · Safety gate** — propose → human approves → allowlisted, server-dry-run remediation
+- [x] **6 · Eval harness** — stages each incident, asserts the RCA vs ground truth, exits non-zero on failure
+- [x] **Cost pass** — cut the Phase 4 analysis calls from ~$0.22 to ~$0.16/run (see below)
+- [ ] Demo video + this write-up finalized
 
-_Cross-cutting from day 1: OpenTelemetry tracing + audit log._
+_Cross-cutting from day 1: OpenTelemetry spans on every node/tool call (not yet exported anywhere)._
 
 ## Repository layout
 ```
@@ -57,9 +75,11 @@ infra/           k3d cluster · kube-prometheus-stack · Online Boutique · read
 src/sre_agent/
   tools/         the 5 read-only evidence tools (+ Pydantic schemas)
   agent/         LangGraph graph, tool bridge, prompts, state/RCA schemas
-  cli.py         status · events · logs · rollout · metrics · investigate
+  remediation.py the Phase 5 allowlist validator + dry-run/apply gate
+  evals.py       the 3 scripted incidents (stage/revert/ground-truth) + scoring
+  cli.py         status · events · logs · rollout · metrics · investigate · eval
 tests/           unit + live-cluster integration tests (auto-skip when offline)
-evals/           (Phase 6) ground-truth incident scenarios
+evals/README.md  how to run the eval harness (specs live in src/sre_agent/evals.py)
 docs/architecture/  the diagrams above
 ```
 
@@ -91,15 +111,62 @@ sre-agent logs <pod> --previous           # crashed-container logs (for CrashLoo
 sre-agent rollout emailservice            # revision history with per-revision images
 sre-agent metrics 'sum(up)'               # PromQL (needs the Prometheus port-forward)
 ```
-Then let the agent investigate on its own (requires `ANTHROPIC_API_KEY` in `.env`):
+Let the agent investigate on its own (requires `ANTHROPIC_API_KEY` in `.env`):
 ```bash
 sre-agent investigate boutique -w emailservice -a "rollout not progressing"
-# → gathers evidence, prints a root-cause report + a PROPOSED fix (never auto-run)
+# → gathers evidence, ranks hypotheses, prints a root-cause report + a PROPOSED fix
+sre-agent investigate boutique -v          # stream reasoning, tool calls, and per-call cost live
+```
+Close the loop — propose, dry-run, approve, apply — using *your* kubectl identity, not the agent's:
+```bash
+sre-agent investigate boutique -w redis-cart -x
+# → same investigation, then: allowlist check → server --dry-run preview → confirm → apply → re-verify
+```
+Regression-test the agent against ground truth (mutates the cluster, costs real money, always reverts):
+```bash
+sre-agent eval                 # all 3 scripted incidents
+sre-agent eval -i cascade -y   # just one, skip the confirmation
 ```
 
-## Incidents investigated (derived from manual runs)
-| Class | Example | Evidence lens |
-|---|---|---|
-| Workload | ImagePullBackOff (bad tag) | events |
-| Workload | CrashLoopBackOff (crash on start) | logs (`--previous`) |
-| Dependency | redis-cart cascade | cross-service correlation |
+## Incidents proven live
+| Incident | Category | Confidence | Cost / run* |
+|---|---|---|---|
+| ImagePullBackOff (bad image tag, currencyservice) | rollout | 0.95 | ~$0.12 |
+| CrashLoopBackOff (bad command → `ModuleNotFoundError`, emailservice) | rollout | 0.85 | ~$0.16 |
+| Dependency cascade (redis-cart scaled to 0, no workload hint given) | dependency | 0.85 | ~$0.16 |
+
+\* claude-sonnet-5, `AGENT_EFFORT=medium`, after the caching fix below. Each row above is a
+live `sre-agent eval` run, not a mocked example — see [`evals/README.md`](evals/README.md).
+
+## Keeping it honest and keeping it cheap: two things that broke first
+
+**The eval harness catching its own bug.** The first live run of the `cascade` scenario
+scored the RCA `scheduling` instead of `dependency` — the model reasoned "desired replicas
+= 0 means nothing gets scheduled," conflating a deliberate scale-down with a pod that can't
+be *placed*. Diagnostically the report was right (redis-cart, correct fix, 0.85
+confidence); the taxonomy was wrong. Fixed with an explicit `CATEGORY_GUIDE` injected into
+both prompts that set `category`, since they're independent LLM calls with no shared
+context. This is exactly what an eval harness is for — a bug a quick eyeball of a "looks
+right" RCA would likely have missed.
+
+**A caching fix that made things worse before it made them better.** Three of the agent's
+four LLM calls per run (`correlate`/`hypothesize`/`propose`) each re-sent the *entire*
+gathered transcript at full price, because `messages.parse()` — used for guaranteed schema
+validation — rejects prompt caching outright. The first fix attempt (switch to
+`messages.create()` + structured-output mode, which *can* take `cache_control`) backfired:
+each call asks for a different JSON shape, and Anthropic bakes that shape into the same
+cacheable region as the system prompt, so the three calls never shared a cache with each
+other or with `gather`. Cost went from $0.22/run to **$0.33**. The fix that actually
+worked: make every analysis call mirror `gather`'s request shape byte-for-byte (same
+system prompt, tools, thinking config, and — the detail that mattered — leaving
+`tool_choice` at its default instead of forcing it), then ask for JSON in the prompt and
+parse it by hand instead of relying on structured-output mode. Verified live: all three
+calls now read the same cached transcript at a fraction of the price. **$0.1586/run**, down
+from $0.22, with the RCA unchanged.
+
+## Known gaps
+- OpenTelemetry spans are wired into every node and tool call, but no exporter is
+  configured yet (`setup_tracing()` in `observability.py` is never invoked) — there's no
+  historical trace/timing data for any past run. On the list, not urgent.
+- 3 incident classes are scripted; more failure modes (OOM/resource limits, networking/DNS,
+  storage/PVC, node pressure) would broaden what's actually proven rather than just designed for.
