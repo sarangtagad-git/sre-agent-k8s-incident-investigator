@@ -445,7 +445,7 @@ def listen(
         f"{'[cyan](dry-run: no LLM calls)[/]' if dry_run else ''}\n"
         f"[dim]policy: namespaces={s.alert_namespaces}  daily cap={s.alert_daily_run_cap}  "
         f"cooldown={s.alert_cooldown_minutes}m  mode=propose-only (never executes fixes)[/]\n"
-        f"[dim]Alertmanager webhook URL (from inside k3d): http://host.k3d.internal:{p}/alerts[/]"
+        f"[dim]Alertmanager webhook URL (from inside the cluster): http://host.docker.internal:{p}/alerts[/]"
     )
     uvicorn.run(create_app(dry_run=dry_run), host="0.0.0.0", port=p, log_level="warning")
 

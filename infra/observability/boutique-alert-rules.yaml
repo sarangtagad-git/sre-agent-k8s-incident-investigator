@@ -1,0 +1,57 @@
+# Phase 9: fast-firing alert rules for the boutique demo app.
+#
+# The stock kube-prometheus-stack rules mostly need 15m of sustained failure before
+# firing — right for production, hopeless for a lab demo. These fire in 1-2 minutes and
+# are scoped to the boutique namespace only; the rest of the cluster stays on stock
+# rules. Written against what the eval incidents (src/sre_agent/evals.py) actually do
+# to the metrics:
+#   image_pull  -> ImagePullBackOff waiting reason      -> BoutiquePodStuck
+#   crash_loop  -> CrashLoopBackOff waiting reason      -> BoutiquePodStuck
+#   cascade     -> redis-cart spec_replicas dropped to 0 -> BoutiqueWorkloadScaledToZero
+#
+# The `release: kps` label is REQUIRED — the prometheus-operator's ruleSelector only
+# discovers PrometheusRules carrying the Helm release label.
+#
+# Apply:  kubectl apply -f boutique-alert-rules.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: boutique-demo-alerts
+  namespace: monitoring
+  labels:
+    release: kps
+spec:
+  groups:
+    - name: boutique.demo
+      rules:
+        - alert: BoutiquePodStuck
+          expr: >-
+            max by (namespace, pod, reason)
+            (kube_pod_container_status_waiting_reason{namespace="boutique",
+             reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError"}) == 1
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.pod }} is stuck in {{ $labels.reason }}"
+            description: "Container in pod {{ $labels.pod }} (ns {{ $labels.namespace }}) has been waiting with reason {{ $labels.reason }} for 2m."
+
+        - alert: BoutiqueDeploymentUnavailable
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="boutique"} == 0
+            and kube_deployment_spec_replicas{namespace="boutique"} > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deployment {{ $labels.deployment }} has 0 available replicas"
+            description: "Deployment {{ $labels.deployment }} (ns {{ $labels.namespace }}) wants replicas but none are available — pods failing to start or crash-looping."
+
+        - alert: BoutiqueWorkloadScaledToZero
+          expr: kube_deployment_spec_replicas{namespace="boutique"} == 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deployment {{ $labels.deployment }} is scaled to 0 replicas"
+            description: "Deployment {{ $labels.deployment }} (ns {{ $labels.namespace }}) has desired=0. In this lab every boutique workload should be running — a scale-to-zero is an incident (the cascade scenario), even though Kubernetes itself considers it intentional."

@@ -39,6 +39,44 @@ alertmanager:
       requests:
         cpu: 25m
         memory: 64Mi
+  # Phase 9: route boutique alerts to the local `sre-agent listen` webhook (the agent
+  # auto-investigates, propose-only — see docs/alerts-plan.md). Setting `config`
+  # REPLACES the chart default, so the default "null" receiver + Watchdog mute are
+  # reproduced here.
+  # NOTE: this cluster's k3d does NOT inject host.k3d.internal; what does resolve —
+  # via CoreDNS forwarding to Docker Desktop's embedded DNS — is host.docker.internal
+  # (verified from the alertmanager pod, 2026-07-25).
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: "null"
+      group_by: ["namespace"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      routes:
+        - receiver: "null"
+          matchers:
+            - alertname = "Watchdog"
+        - receiver: sre-agent
+          matchers:
+            - namespace = "boutique"
+          group_by: ["alertname", "namespace"]
+          group_wait: 30s
+          # Short on purpose. With send_resolved=false Alertmanager dedups a re-fired
+          # identical alert against its notification log until repeat_interval passes
+          # (a resolve alone doesn't reset it — verified live 2026-07-25 when a
+          # re-staged incident produced no second webhook under 4h). The agent's own
+          # 30m cooldown + daily cap are the real spend gate, so re-posting often is
+          # safe and keeps the lab responsive.
+          repeat_interval: 15m
+    receivers:
+      - name: "null"
+      - name: sre-agent
+        webhook_configs:
+          - url: "http://host.docker.internal:9095/alerts"
+            send_resolved: false  # the agent acts on firing only
 
 grafana:
   # Default login is admin / prom-operator — pinned here so we know it.
