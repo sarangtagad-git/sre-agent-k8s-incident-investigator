@@ -3,6 +3,9 @@
 *.kubeconfig
 infra/rbac/sre-agent.kubeconfig
 
+# Local run history (SQLite) — runtime state, not source
+data/
+
 # Python
 __pycache__/
 *.py[cod]

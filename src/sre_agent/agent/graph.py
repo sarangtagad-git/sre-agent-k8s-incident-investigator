@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import anthropic
 from langgraph.graph import END, START, StateGraph
@@ -38,6 +39,7 @@ from .schemas import (
     Hypotheses,
     IncidentContext,
     RCAReport,
+    RunResult,
 )
 from .tools_bridge import ANTHROPIC_TOOLS, execute_tool
 
@@ -52,6 +54,13 @@ def _price_for(model: str) -> tuple[float, float]:
         if key in model:
             return price
     return _PRICES["opus"]
+
+
+def _estimate_cost(totals: dict, model: str) -> float:
+    price_in, price_out = _price_for(model)
+    return (
+        totals["input"] + totals["cache_write"] * 1.25 + totals["cache_read"] * 0.10
+    ) * price_in / 1e6 + totals["output"] * price_out / 1e6
 
 
 def _build_graph(client, clients, settings, verbose=False, console=None):
@@ -232,12 +241,8 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
             report = analyze(state["messages"], analysis + "\n\n" + REPORT_INSTRUCTION, RCAReport)
 
             if console:
-                price_in, price_out = _price_for(settings.agent_model)
-                est = (
-                    totals["input"]
-                    + totals["cache_write"] * 1.25
-                    + totals["cache_read"] * 0.10
-                ) * price_in / 1e6 + totals["output"] * price_out / 1e6
+                price_in, _ = _price_for(settings.agent_model)
+                est = _estimate_cost(totals, settings.agent_model)
                 saved = totals["cache_read"] * 0.90 * price_in / 1e6  # vs paying full price
                 say(
                     f"\n[bold]run totals[/] — input={totals['input']}  "
@@ -262,11 +267,11 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
     g.add_edge("hypothesize", "rank")
     g.add_edge("rank", "propose")
     g.add_edge("propose", END)
-    return g.compile()
+    return g.compile(), totals
 
 
-def investigate(incident: IncidentContext, verbose: bool = False) -> RCAReport:
-    """Run a full investigation and return the structured RCA.
+def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
+    """Run a full investigation and return the RCA plus the trail behind it.
 
     verbose=True streams each step (reasoning summary, tool call, result) to stdout.
     """
@@ -278,9 +283,10 @@ def investigate(incident: IncidentContext, verbose: bool = False) -> RCAReport:
     clients = load_readonly_clients()
     console = Console() if verbose else None
 
+    start = time.perf_counter()
     with _tracer.start_as_current_span("agent.investigate") as span:
         span.set_attribute("incident.namespace", incident.namespace)
-        app = _build_graph(client, clients, settings, verbose=verbose, console=console)
+        app, totals = _build_graph(client, clients, settings, verbose=verbose, console=console)
         initial: AgentState = {
             "incident": incident,
             "messages": [{"role": "user", "content": render_incident(incident)}],
@@ -292,4 +298,15 @@ def investigate(incident: IncidentContext, verbose: bool = False) -> RCAReport:
         }
         final = app.invoke(initial)
         span.set_attribute("agent.iterations", final["iterations"])
-        return final["report"]
+        return RunResult(
+            report=final["report"],
+            evidence=final["evidence"],
+            correlation=final["correlation"],
+            hypotheses=final["hypotheses"],
+            input_tokens=totals["input"],
+            cache_write_tokens=totals["cache_write"],
+            cache_read_tokens=totals["cache_read"],
+            output_tokens=totals["output"],
+            cost_usd=_estimate_cost(totals, settings.agent_model),
+            duration_s=time.perf_counter() - start,
+        )

@@ -6,12 +6,12 @@ Phase-2 tools; the proposed remediation must pass the human approval gate (Phase
 before anything runs.
 """
 
-from .schemas import IncidentContext, RCAReport, Remediation
+from .schemas import IncidentContext, RCAReport, Remediation, RunResult
 
-__all__ = ["IncidentContext", "RCAReport", "Remediation", "investigate"]
+__all__ = ["IncidentContext", "RCAReport", "Remediation", "RunResult", "investigate"]
 
 
-def investigate(incident: IncidentContext, verbose: bool = False) -> RCAReport:
+def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
     """Lazy wrapper so importing the package doesn't require anthropic/langgraph."""
     from .graph import investigate as _investigate
 

@@ -162,14 +162,16 @@ def investigate(
     """
     from rich.panel import Panel
 
+    from . import history_store
     from .agent import IncidentContext, investigate as run
 
     incident = IncidentContext(namespace=namespace, workload=workload, alert=alert)
     if verbose:
-        report = run(incident, verbose=True)  # streams steps itself; no spinner
+        result = run(incident, verbose=True)  # streams steps itself; no spinner
     else:
         with console.status("[bold]investigating…[/] (the agent is calling read-only tools)"):
-            report = run(incident)
+            result = run(incident)
+    report = result.report
 
     console.print(Panel(f"[bold]{report.summary}[/bold]", title="Root-cause analysis", border_style="cyan"))
     console.print(
@@ -198,8 +200,20 @@ def investigate(
         )
     )
 
+    approval_status = "n/a"
     if execute:
-        _approval_gate(rem.command, reversible=rem.reversible)
+        approval_status = _approval_gate(rem.command, reversible=rem.reversible)
+
+    run_id = history_store.save_run(
+        result,
+        namespace=namespace,
+        workload=workload,
+        alert=alert,
+        mode="execute" if execute else "propose",
+        approval_status=approval_status,
+        resolved=True if approval_status == "approved_applied" else None,
+    )
+    console.print(f"\n[dim]saved as run {run_id} — see `sre-agent history {run_id}`[/]")
 
 
 @app.command("eval")
@@ -210,13 +224,14 @@ def eval_cmd(
 ) -> None:
     """Regression-test the agent: stage each incident, run it, assert the RCA, then revert.
 
-    Costs ~$0.22 per incident and mutates the cluster, so it is a deliberate command — not
+    Costs ~$0.15 per incident and mutates the cluster, so it is a deliberate command — not
     part of the (free, cluster-less) unit test suite. Exits non-zero if any incident fails.
     """
     import time
 
     from rich.table import Table as _Table
 
+    from . import history_store
     from .agent import investigate as run
     from .evals import INCIDENTS, Check, incident_passed, score
     from .remediation import run_kubectl
@@ -230,7 +245,7 @@ def eval_cmd(
     if not yes:
         console.print(
             f"[yellow]This stages/reverts {len(incidents)} real incident(s) and runs the live "
-            f"agent (~$0.22 each).[/]"
+            f"agent (~$0.15 each).[/]"
         )
         if not typer.confirm("Proceed?", default=False):
             raise typer.Abort()
@@ -243,9 +258,8 @@ def eval_cmd(
         console.print(f"[dim]staged; waiting {inc.wait_seconds}s for the failure to surface…[/]")
         time.sleep(inc.wait_seconds)
         try:
-            t0 = time.perf_counter()
-            report = run(inc.context)
-            dt = time.perf_counter() - t0
+            result = run(inc.context)
+            report = result.report
             checks = score(report, inc)
             ok = incident_passed(checks)
             console.print(
@@ -256,7 +270,18 @@ def eval_cmd(
                 mark = "[green]✓[/]" if c.passed else "[red]✗[/]"
                 tag = "[dim](critical)[/]" if c.critical else "[dim](info)[/]"
                 console.print(f"    {mark} {c.name} {tag}  [dim]{c.detail}[/]")
-            results.append((inc.name, ok, checks, dt))
+            results.append((inc.name, ok, checks, result.duration_s))
+            run_id = history_store.save_run(
+                result,
+                namespace=inc.context.namespace,
+                workload=inc.context.workload,
+                alert=inc.context.alert,
+                mode="eval",
+                incident_name=inc.name,
+                resolved=ok,
+                eval_checks=checks,
+            )
+            console.print(f"  [dim]saved as run {run_id}[/]")
         except Exception as e:  # noqa: BLE001 — surface any run failure as an incident failure
             console.print(f"  [red]run error: {e}[/]")
             results.append((inc.name, False, [Check("run", False, True, str(e))], 0.0))
@@ -281,8 +306,125 @@ def eval_cmd(
     console.print("[green]All incidents passed.[/]")
 
 
-def _approval_gate(command: str, reversible: bool = True) -> None:
-    """The Phase-5 gate: allowlist -> server dry-run -> human confirm -> apply."""
+def _status_label(row) -> str:
+    mode = row["mode"]
+    if mode == "eval":
+        return "[green]PASS[/]" if row["resolved"] else "[red]FAIL[/]"
+    if mode == "execute":
+        return {
+            "approved_applied": "[green]Applied[/]",
+            "rejected": "[yellow]Rejected[/]",
+            "blocked": "[red]Blocked[/]",
+            "dry_run_failed": "[red]Dry-run failed[/]",
+            "apply_failed": "[red]Apply failed[/]",
+        }.get(row["approval_status"], row["approval_status"])
+    return "[cyan]Proposed[/]"
+
+
+@app.command()
+def history(
+    run_id: str = typer.Argument(None, help="show this run in full detail (omit to list recent runs)"),
+    limit: int = typer.Option(20, "--limit", "-n", help="how many recent runs to list"),
+) -> None:
+    """List past investigate/eval runs, or show one in full detail."""
+    import json
+
+    from rich.panel import Panel
+
+    from . import history_store
+
+    if run_id is None:
+        rows = history_store.list_runs(limit=limit)
+        if not rows:
+            console.print("[dim]No runs recorded yet — `investigate` or `eval` writes to this history.[/]")
+            return
+        t = Table()
+        for col in ("id", "when", "target", "category", "conf", "cost", "mode", "status"):
+            t.add_column(col)
+        for row in rows:
+            target = row["workload"] or row["namespace"]
+            t.add_row(
+                row["id"][:8],
+                row["started_at"].replace("T", " "),
+                target,
+                row["category"] or "-",
+                f"{row['confidence_score']:.2f}" if row["confidence_score"] is not None else "-",
+                f"${row['cost_usd']:.4f}" if row["cost_usd"] is not None else "-",
+                row["mode"],
+                _status_label(row),
+            )
+        console.print(t)
+        return
+
+    row = history_store.get_run(run_id)
+    if row is None:
+        console.print(f"[red]No run matching {run_id!r}.[/]")
+        raise typer.Exit(code=2)
+
+    console.print(
+        Panel(
+            f"[bold]{row['alert'] or '(no alert text given)'}[/]\n"
+            f"[dim]namespace={row['namespace']}  workload={row['workload'] or '-'}  "
+            f"mode={row['mode']}  incident={row['incident_name'] or '-'}[/]",
+            title=f"Run {row['id']} — {row['started_at'].replace('T', ' ')} "
+            f"({row['duration_s']:.1f}s, ${row['cost_usd']:.4f})",
+            border_style="cyan",
+        )
+    )
+
+    evidence = json.loads(row["evidence_json"] or "[]")
+    if evidence:
+        console.print("\n[bold]Evidence gathered:[/]")
+        for e in evidence:
+            mark = "[green]✓[/]" if e["ok"] else "[red]✗[/]"
+            args = ", ".join(f"{k}={v}" for k, v in (e.get("input") or {}).items())
+            console.print(f"  {mark} [yellow]{e['tool']}[/]([dim]{args}[/]) — {e['summary']}")
+
+    correlation = json.loads(row["correlation_json"]) if row["correlation_json"] else None
+    if correlation:
+        console.print("\n[bold]Timeline:[/]")
+        for entry in correlation["timeline"]:
+            console.print(f"  [dim]•[/] {entry['when']} — {entry['what']}")
+        if correlation["dependency_chain"]:
+            console.print("  [magenta]chain:[/] " + " [dim]→[/] ".join(correlation["dependency_chain"]))
+
+    hypotheses = json.loads(row["hypotheses_json"] or "[]")
+    if hypotheses:
+        console.print("\n[bold]Hypotheses considered (ranked):[/]")
+        for h in hypotheses:
+            console.print(f"  [dim][{h['confidence']:.2f}][/] [white]{h['category']}[/]: {h['cause']}")
+
+    report = json.loads(row["report_json"])
+    console.print(f"\n[bold]Root cause[/] ({report['category']}, {report['confidence']} · {report['confidence_score']:.2f}):")
+    console.print(f"  {report['root_cause']}")
+    console.print(f"\n[bold]Impact:[/] {report['impact']}")
+    rem = report["remediation"]
+    console.print(
+        Panel(
+            f"[bold]{rem['action']}[/bold]\n[dim]{rem['rationale']}[/dim]\n\n[green]$ {rem['command']}[/green]",
+            title="Proposed remediation",
+            border_style="yellow",
+        )
+    )
+    console.print(f"\n[bold]Approval status:[/] {row['approval_status']}")
+    if row["resolved"] is not None:
+        console.print(f"[bold]Resolved:[/] {'yes' if row['resolved'] else 'no'}")
+
+    eval_checks = json.loads(row["eval_checks_json"]) if row["eval_checks_json"] else None
+    if eval_checks:
+        console.print("\n[bold]Eval checks:[/]")
+        for c in eval_checks:
+            mark = "[green]✓[/]" if c["passed"] else "[red]✗[/]"
+            tag = "[dim](critical)[/]" if c["critical"] else "[dim](info)[/]"
+            console.print(f"  {mark} {c['name']} {tag}  [dim]{c['detail']}[/]")
+
+
+def _approval_gate(command: str, reversible: bool = True) -> str:
+    """The Phase-5 gate: allowlist -> server dry-run -> human confirm -> apply.
+
+    Returns one of "blocked" | "dry_run_failed" | "rejected" | "apply_failed" |
+    "approved_applied", so the caller can record what actually happened.
+    """
     from rich.panel import Panel
 
     from .remediation import run_kubectl, validate_remediation
@@ -296,7 +438,7 @@ def _approval_gate(command: str, reversible: bool = True) -> None:
                 border_style="red",
             )
         )
-        return
+        return "blocked"
 
     # Preview: server-side dry-run of the mutating command(s) — validates, changes nothing.
     console.print("\n[bold]Dry-run[/] [dim](server-side validation, no changes made):[/]")
@@ -307,13 +449,13 @@ def _approval_gate(command: str, reversible: bool = True) -> None:
             console.print(f"    [dim]{line}[/]")
         if rc != 0:
             console.print("[red]Dry-run failed — aborting; no changes made.[/]")
-            return
+            return "dry_run_failed"
 
     if not reversible:
         console.print("[yellow]⚠  This action is marked NOT easily reversible.[/]")
     if not typer.confirm("\nApply this change to the cluster now?", default=False):
         console.print("[yellow]Aborted by human — no changes made.[/]")
-        return
+        return "rejected"
 
     # Apply the mutating command(s) for real, then run any read-only verification steps.
     console.print("\n[bold]Applying…[/]")
@@ -323,13 +465,14 @@ def _approval_gate(command: str, reversible: bool = True) -> None:
         console.print(f"    {(out or err).strip()}")
         if rc != 0:
             console.print("[red]Command failed — stopping.[/]")
-            return
+            return "apply_failed"
     for args in decision.readonly:
         rc, out, err = run_kubectl(args)
         console.print(f"  [dim]$ {' '.join(args)}[/]")
         for line in (out or err).strip().splitlines():
             console.print(f"    [dim]{line}[/]")
     console.print("\n[green]✓ Applied.[/] Re-run `sre-agent status` to confirm recovery.")
+    return "approved_applied"
 
 
 if __name__ == "__main__":

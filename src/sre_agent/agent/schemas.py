@@ -97,6 +97,23 @@ class RCAReport(BaseModel):
     remediation: Remediation
 
 
+class RunResult(BaseModel):
+    """Everything one `investigate()` call produced — the report plus the trail
+    behind it (evidence, correlation, ranked hypotheses, cost) — so a caller can
+    persist the full run, not just the final RCA."""
+
+    report: RCAReport
+    evidence: list[ToolRecord] = Field(default_factory=list)
+    correlation: Correlation | None = None
+    hypotheses: list[Hypothesis] = Field(default_factory=list)  # ranked, highest first
+    input_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    duration_s: float = 0.0
+
+
 class AgentState(TypedDict):
     """LangGraph state flowing through gather -> correlate -> hypothesize -> rank -> propose."""
 
