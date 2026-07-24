@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS runs (
     output_tokens INTEGER,
     approval_status TEXT NOT NULL DEFAULT 'n/a',
     resolved INTEGER,
+    triggered_by TEXT NOT NULL DEFAULT 'manual',
     evidence_json TEXT,
     correlation_json TEXT,
     hypotheses_json TEXT,
@@ -62,6 +63,12 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute(_SCHEMA)
+    # Phase 9 migration: pre-existing DBs lack triggered_by. ALTER is idempotent-by-
+    # exception — cheap enough at open time for a single-user file, no framework needed.
+    try:
+        conn.execute("ALTER TABLE runs ADD COLUMN triggered_by TEXT NOT NULL DEFAULT 'manual'")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     return conn
 
 
@@ -76,6 +83,7 @@ def save_run(
     approval_status: str = "n/a",
     resolved: bool | None = None,
     eval_checks: "list[Check] | None" = None,
+    triggered_by: str = "manual",  # "manual" | "alert" (Phase 9 listener)
 ) -> str:
     """Persist one investigate()/eval run. Returns the new run id."""
     run_id = uuid.uuid4().hex[:12]
@@ -88,9 +96,9 @@ def save_run(
                 id, started_at, duration_s, namespace, workload, alert, mode,
                 incident_name, category, confidence_score, root_cause, cost_usd,
                 input_tokens, cache_write_tokens, cache_read_tokens, output_tokens,
-                approval_status, resolved, evidence_json, correlation_json,
-                hypotheses_json, report_json, eval_checks_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                approval_status, resolved, triggered_by, evidence_json,
+                correlation_json, hypotheses_json, report_json, eval_checks_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 run_id,
@@ -111,6 +119,7 @@ def save_run(
                 result.output_tokens,
                 approval_status,
                 None if resolved is None else int(resolved),
+                triggered_by,
                 json.dumps([e.model_dump() for e in result.evidence]),
                 json.dumps(result.correlation.model_dump()) if result.correlation else None,
                 json.dumps([h.model_dump() for h in result.hypotheses]),
@@ -134,13 +143,29 @@ def list_runs(limit: int = 20) -> list[sqlite3.Row]:
         conn.close()
 
 
+def runs_since(since_iso: str) -> list[sqlite3.Row]:
+    """Runs started at/after `since_iso` (local "%Y-%m-%dT%H:%M:%S", same format we
+    write — lexicographic compare is chronological). Used by the Phase 9 alert policy
+    for its cooldown + daily-cap checks, so autonomy state lives in the same table as
+    everything else."""
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT id, started_at, namespace, alert, triggered_by FROM runs "
+            "WHERE started_at >= ? ORDER BY started_at DESC",
+            (since_iso,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
 def get_run(run_id: str) -> sqlite3.Row | None:
     """Exact id, or a unique prefix of it (like a short git hash)."""
     conn = _connect()
     try:
         return conn.execute(
-            "SELECT * FROM runs WHERE id = ?1 OR id LIKE ?1 || '%' ORDER BY id LIMIT 1",
-            (run_id,),
+            "SELECT * FROM runs WHERE id = ? OR id LIKE ? || '%' ORDER BY id LIMIT 1",
+            (run_id, run_id),
         ).fetchone()
     finally:
         conn.close()

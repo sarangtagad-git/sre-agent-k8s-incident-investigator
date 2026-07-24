@@ -407,6 +407,8 @@ def history(
         )
     )
     console.print(f"\n[bold]Approval status:[/] {row['approval_status']}")
+    if "triggered_by" in row.keys():
+        console.print(f"[bold]Triggered by:[/] {row['triggered_by']}")
     if row["resolved"] is not None:
         console.print(f"[bold]Resolved:[/] {'yes' if row['resolved'] else 'no'}")
 
@@ -417,6 +419,35 @@ def history(
             mark = "[green]✓[/]" if c["passed"] else "[red]✗[/]"
             tag = "[dim](critical)[/]" if c["critical"] else "[dim](info)[/]"
             console.print(f"  {mark} {c['name']} {tag}  [dim]{c['detail']}[/]")
+
+
+@app.command()
+def listen(
+    port: int = typer.Option(None, "--port", "-p", help="listen port (default: ALERT_LISTEN_PORT / 9095)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="log trigger decisions but never call the LLM"),
+) -> None:
+    """Listen for Alertmanager webhooks and auto-investigate (propose-only, spend-capped).
+
+    Phase 9: Alertmanager routes boutique alerts to this listener; each firing alert
+    passes the guardrails (namespace allowlist, per-alert cooldown, daily run cap)
+    before the agent investigates. Fixes are NEVER applied automatically. Ctrl-C is
+    the kill switch. See docs/alerts-plan.md.
+    """
+    import uvicorn
+
+    from .config import get_settings
+    from .listener import create_app
+
+    s = get_settings()
+    p = port or s.alert_listen_port
+    console.print(
+        f"[bold]sre-agent listener[/] on 0.0.0.0:{p}  "
+        f"{'[cyan](dry-run: no LLM calls)[/]' if dry_run else ''}\n"
+        f"[dim]policy: namespaces={s.alert_namespaces}  daily cap={s.alert_daily_run_cap}  "
+        f"cooldown={s.alert_cooldown_minutes}m  mode=propose-only (never executes fixes)[/]\n"
+        f"[dim]Alertmanager webhook URL (from inside k3d): http://host.k3d.internal:{p}/alerts[/]"
+    )
+    uvicorn.run(create_app(dry_run=dry_run), host="0.0.0.0", port=p, log_level="warning")
 
 
 def _approval_gate(command: str, reversible: bool = True) -> str:

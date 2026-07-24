@@ -86,6 +86,7 @@ html, body, [data-testid="stAppViewContainer"] * {
 .row .row-side { text-align: right; flex-shrink: 0; }
 .row .noticed { font-size: 0.7rem; color: var(--muted); margin-top: 0.28rem; font-variant-numeric: tabular-nums; }
 .cat { display: inline-block; background: var(--moss-soft); color: var(--moss); font-size: 0.68rem; font-weight: 700; padding: 0.05rem 0.45rem; border-radius: 5px; letter-spacing: 0.02em; }
+.auto-chip { display: inline-block; background: var(--ember-soft); color: var(--ember); font-size: 0.66rem; font-weight: 700; padding: 0.05rem 0.45rem; border-radius: 5px; letter-spacing: 0.04em; text-transform: uppercase; }
 .pill { font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.6rem; border-radius: 999px; white-space: nowrap; }
 .pill.good { color: var(--good); background: var(--good-soft); }
 .pill.warn { color: var(--warn); background: var(--warn-soft); }
@@ -273,6 +274,11 @@ def _incident_title(row: sqlite3.Row) -> str:
     return f"{pretty} — {subject}" if subject else pretty
 
 
+def _is_auto(row: sqlite3.Row) -> bool:
+    """True when the run was triggered by an alert (Phase 9 listener), not a human."""
+    return "triggered_by" in row.keys() and row["triggered_by"] == "alert"
+
+
 def _summary_line(row: sqlite3.Row) -> str:
     report = json.loads(row["report_json"])
     return report.get("summary") or report["root_cause"]
@@ -369,10 +375,11 @@ def _card_html(row: sqlite3.Row, number: int) -> str:
     pill_full = f"{pill_text} · {conf:.2f}" if conf is not None else pill_text
     cost = f"${row['cost_usd']:.4f}" if row["cost_usd"] is not None else "–"
     cat = f'<span class="cat">{esc(row["category"])}</span>' if row["category"] else ""
+    auto = '<span class="auto-chip">auto</span>' if _is_auto(row) else ""
     return f"""
     <div class="row">
       <div class="row-main">
-        <div class="row-top"><span class="inum">#{number}</span><span class="who">{esc(title)}</span>{cat}</div>
+        <div class="row-top"><span class="inum">#{number}</span><span class="who">{esc(title)}</span>{cat}{auto}</div>
         <div class="sub">{esc(_summary_line(row))}</div>
       </div>
       <div class="row-side">
@@ -612,11 +619,12 @@ def _header_band(row: sqlite3.Row, number: int, evidence: list, correlation: dic
     if row["incident_name"]:
         chips.append(f'<span class="meta-chip">eval scenario <b>{esc(row["incident_name"])}</b></span>')
     chips.append(f'<span class="meta-chip">mode <b>{esc(row["mode"])}</b></span>')
+    auto = '<span class="auto-chip">auto · alert-triggered</span>' if _is_auto(row) else ""
 
     return f"""
     <div class="hdr">
       <div class="p-num">INCIDENT #{number}</div>
-      <div class="title-row"><h2>{esc(title)}</h2><span class="pill {pill_class}">{esc(pill_full)}</span></div>
+      <div class="title-row"><h2>{esc(title)}</h2>{auto}<span class="pill {pill_class}">{esc(pill_full)}</span></div>
       <div class="p-sub">{esc(_summary_line(row))}</div>
       <div class="metarow">{"".join(chips)}</div>
       {_pipeline_html(row, evidence, correlation, hypotheses)}

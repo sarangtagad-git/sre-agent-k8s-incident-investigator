@@ -33,6 +33,11 @@ dev = [
 dashboard = [
     "streamlit>=1.38",
 ]
+alerts = [
+    # `sre-agent listen` — Alertmanager webhook receiver (Phase 9)
+    "starlette>=0.37",
+    "uvicorn>=0.30",
+]
 
 [project.scripts]
 sre-agent = "sre_agent.cli:app"

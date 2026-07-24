@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # Safety guardrail: hard cap on tool-calling iterations per investigation.
     agent_max_tool_iterations: int = 12
 
+    # Phase 9: alert-triggered investigations (`sre-agent listen`). Autonomy is
+    # propose-only and spend-bounded — see docs/alerts-plan.md.
+    alert_namespaces: list[str] = ["boutique"]  # only auto-investigate these
+    alert_daily_run_cap: int = 5  # max auto-investigations per calendar day
+    alert_cooldown_minutes: int = 30  # per (namespace, alertname)
+    alert_listen_port: int = 9095
+
 
 def get_settings() -> Settings:
     """Return process settings. Kept as a function for easy test overrides."""
