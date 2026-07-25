@@ -1,10 +1,17 @@
 # Kubernetes Incident Investigator (SRE Agent)
 
 An autonomous agent that investigates Kubernetes incidents when an alert fires —
-it pulls evidence, correlates it, ranks competing root-cause hypotheses, and
-**proposes** remediation behind a **human-in-the-loop approval gate**. It authenticates
-as a **read-only** identity and can never mutate the cluster itself; a regression suite
-stages real incidents against it and scores the RCA before any of this is trusted.
+literally: Alertmanager routes the alert to a local listener, the agent pulls evidence,
+correlates it, ranks competing root-cause hypotheses, and **proposes** remediation
+behind a **human-in-the-loop approval gate**. Every run (manual or alert-triggered)
+lands in a local history and a Streamlit dashboard of named incidents. The agent
+authenticates as a **read-only** identity and can never mutate the cluster itself; its
+autonomy is spend-capped and propose-only; a regression suite stages real incidents
+against it and scores the RCA before any of this is trusted.
+
+**Proven end to end:** break the cluster with one kubectl command and touch nothing
+else — 4½ minutes later a diagnosed incident (correct root cause, gated fix, $0.15)
+appears on the dashboard wearing an "auto" badge.
 
 > Learn-in-public project — built and hardened in public, including the parts that
 > didn't work the first time. Full design brief: [`k8s-incident-investigator-brief.md`](k8s-incident-investigator-brief.md).
@@ -22,15 +29,23 @@ stages real incidents against it and scores the RCA before any of this is truste
   confirmation, applied with *your* kubectl identity, never the agent's.
 - **Provably correct** — an eval harness stages real incidents and scores the RCA against
   ground truth; it has already caught (and driven the fix for) a real classification bug.
+- **Autonomy on a leash** — alert-triggered runs are *propose-mode only, forever*, and
+  spend-bounded by design: a namespace allowlist, a per-alert cooldown (which also counts
+  manual runs), and a daily run cap — all enforced in code and logged when they decline.
+  The listener is a foreground process; Ctrl-C is the kill switch.
 - **Cost-aware, not just cost-blind** — every LLM call is priced and shown to you; a
   caching bug that made analysis 50% *more* expensive was found and fixed by reading the
-  numbers, not by guessing.
+  numbers, not by guessing. The dashboard's Analytics view shows cache-hit meters and
+  cost-per-investigation bars across all runs.
 - **Observe the observer** — OpenTelemetry spans are wired in from day one so tracing has
   somewhere to plug in as the project grows (not yet exported anywhere — see Known gaps).
 
 ## Architecture
 
-When an alert fires (or you run the CLI), the agent runs a **LangGraph** state machine.
+Two ways in: `sre-agent investigate` by hand, or **`sre-agent listen`** — Alertmanager
+routes boutique alerts to a local webhook; each firing alert must pass the trigger
+policy (firing-only → namespace allowlist → cooldown → daily cap) before the agent
+spends a cent. Either way, the agent runs the same **LangGraph** state machine.
 `gather` drives a bounded **ReAct loop** — Claude picks a read-only tool, the tool runs,
 the result feeds back — until there's enough evidence. `correlate` lays out a timeline and
 (for cascades) a service dependency chain. `hypothesize` names competing root causes, each
@@ -39,8 +54,11 @@ LLM call. `propose` writes the final RCA on the top hypothesis with a single gat
 Every node and tool call is an OpenTelemetry span.
 
 ```
-Alert / CLI ─▶ gather (Claude ⇄ read-only tools) ─▶ correlate ─▶ hypothesize ─▶ rank ─▶ propose ─▶ human approval gate
-                     ▲ typed evidence                                                              (never auto-executes)
+Alertmanager ─▶ listener (trigger policy: allowlist · cooldown · daily cap)
+                    │                                                        propose only
+      CLI ──────────┴▶ gather (Claude ⇄ read-only tools) ─▶ correlate ─▶ hypothesize ─▶ rank ─▶ propose ─▶ human approval gate
+                            ▲ typed evidence                                                              (never auto-executes)
+                                                            every run ─▶ SQLite history ─▶ CLI + Streamlit dashboard
 ```
 
 Diagrams (in [`docs/architecture/`](docs/architecture/) — click to view):
@@ -65,22 +83,30 @@ Diagrams (in [`docs/architecture/`](docs/architecture/) — click to view):
 - [x] **5 · Safety gate** — propose → human approves → allowlisted, server-dry-run remediation
 - [x] **6 · Eval harness** — stages each incident, asserts the RCA vs ground truth, exits non-zero on failure
 - [x] **Cost pass** — cut the Phase 4 analysis calls from ~$0.22 to ~$0.16/run (see below)
+- [x] **7 · Run history** — every run persisted to SQLite (evidence trail, hypotheses, RCA, cost, outcome); `sre-agent history`
+- [x] **8 · Dashboard** — Streamlit incident feed + full-page investigation detail + an Analytics view (cache economics, tool usage, approval funnel)
+- [x] **9 · Alert-triggered investigations** — Alertmanager → webhook listener → guardrails → autonomous propose-only run; live-demoed end to end
 - [ ] Demo video + this write-up finalized
 
 _Cross-cutting from day 1: OpenTelemetry spans on every node/tool call (not yet exported anywhere)._
 
 ## Repository layout
 ```
-infra/           k3d cluster · kube-prometheus-stack · Online Boutique · read-only RBAC
+infra/           k3d cluster · kube-prometheus-stack (+ boutique alert rules & the
+                 sre-agent Alertmanager route) · Online Boutique · read-only RBAC
 src/sre_agent/
   tools/         the 5 read-only evidence tools (+ Pydantic schemas)
   agent/         LangGraph graph, tool bridge, prompts, state/RCA schemas
   remediation.py the Phase 5 allowlist validator + dry-run/apply gate
   evals.py       the 3 scripted incidents (stage/revert/ground-truth) + scoring
-  cli.py         status · events · logs · rollout · metrics · investigate · eval
+  history_store.py  SQLite persistence for every run (data/history.db, git-ignored)
+  dashboard.py   the Streamlit dashboard (incident feed · detail pages · analytics)
+  alerts.py      Alertmanager payload models + the pure trigger policy (Phase 9)
+  listener.py    the webhook listener behind `sre-agent listen`
+  cli.py         status · events · logs · rollout · metrics · investigate · eval · history · listen
 tests/           unit + live-cluster integration tests (auto-skip when offline)
 evals/README.md  how to run the eval harness (specs live in src/sre_agent/evals.py)
-docs/architecture/  the diagrams above
+docs/            architecture diagrams · dashboard-plan.md · alerts-plan.md
 ```
 
 ## Quickstart (Phase 1)
@@ -127,6 +153,25 @@ Regression-test the agent against ground truth (mutates the cluster, costs real 
 sre-agent eval                 # all 3 scripted incidents
 sre-agent eval -i cascade -y   # just one, skip the confirmation
 ```
+Browse what the agent has done — every run is persisted:
+```bash
+sre-agent history              # recent runs: target, category, confidence, cost, outcome
+sre-agent history 304358e8     # one run in full: evidence trail, timeline, hypotheses, RCA
+make dashboard                 # the Streamlit UI: incident feed, detail pages, analytics
+```
+Let the cluster page the agent itself (Phase 9 — see [`docs/alerts-plan.md`](docs/alerts-plan.md)):
+```bash
+# one-time wiring: fast boutique alert rules + the Alertmanager → listener route
+kubectl apply -f infra/observability/boutique-alert-rules.yaml
+helm upgrade kps prometheus-community/kube-prometheus-stack -n monitoring \
+  -f infra/observability/kube-prometheus-stack.values.yaml
+
+sre-agent listen --dry-run     # test the whole pipe free: logs every trigger decision, never calls the LLM
+sre-agent listen               # the real thing: firing alert → guardrails → autonomous propose-only run
+```
+Alert-triggered runs pass a namespace allowlist, a 30-min per-alert cooldown, and a
+daily run cap before a cent is spent; every decline is logged with its reason, and the
+resulting incidents show up in the dashboard with an "auto" badge.
 
 ## Incidents proven live
 | Incident | Category | Confidence | Cost / run* |
@@ -138,7 +183,13 @@ sre-agent eval -i cascade -y   # just one, skip the confirmation
 \* claude-sonnet-5, `AGENT_EFFORT=medium`, after the caching fix below. Each row above is a
 live `sre-agent eval` run, not a mocked example — see [`evals/README.md`](evals/README.md).
 
-## Keeping it honest and keeping it cheap: two things that broke first
+The CrashLoopBackOff scenario has also been diagnosed **fully autonomously**: emailservice
+was broken at 20:02:41 with nothing else touched — `BoutiquePodStuck` fired, Alertmanager
+called the listener, the guardrails passed, and by 20:07:12 the agent had filed the
+incident (workload, 0.85, $0.15, `ModuleNotFoundError` correctly pulled from the crashed
+container's `--previous` logs). No human ran anything.
+
+## Keeping it honest and keeping it cheap: three things that broke first
 
 **The eval harness catching its own bug.** The first live run of the `cascade` scenario
 scored the RCA `scheduling` instead of `dependency` — the model reasoned "desired replicas
@@ -164,9 +215,23 @@ parse it by hand instead of relying on structured-output mode. Verified live: al
 calls now read the same cached transcript at a fraction of the price. **$0.1586/run**, down
 from $0.22, with the RCA unchanged.
 
+**The alert that never came back.** The first end-to-end Phase 9 demo produced… silence.
+The pipe had already worked in a dry run minutes earlier; re-staging the *same* incident
+produced no second webhook. Cause: with `send_resolved: false`, Alertmanager dedups a
+re-fired identical alert against its notification log until `repeat_interval` (then 4h)
+passes — an alert *resolving* does not reset that clock. The fix is a deliberately short
+`repeat_interval: 15m` with the real spend control living in the agent's own cooldown +
+daily cap, which is where it belongs anyway. Honorable mention from the same session:
+this k3d cluster never injects `host.k3d.internal` — pods reach the host via
+`host.docker.internal` through Docker Desktop's DNS, which the plan only caught because
+"reachability" was flagged as the riskiest assumption and tested before anything else.
+
 ## Known gaps
 - OpenTelemetry spans are wired into every node and tool call, but no exporter is
   configured yet (`setup_tracing()` in `observability.py` is never invoked) — there's no
   historical trace/timing data for any past run. On the list, not urgent.
 - 3 incident classes are scripted; more failure modes (OOM/resource limits, networking/DNS,
   storage/PVC, node pressure) would broaden what's actually proven rather than just designed for.
+- The listener is a foreground lab tool by design — no daemon/systemd, no HA, and the
+  dashboard is local-only (it reads the same local SQLite file the CLI writes).
+- The dashboard shows finished runs; an in-progress investigation isn't streamed live yet.
