@@ -1,8 +1,15 @@
 """The LangGraph investigation agent.
 
-Pipeline (Phase 4): gather -> correlate -> hypothesize -> rank -> propose.
+Pipeline: gather -> recall -> correlate -> hypothesize -> rank -> propose.
 
   gather       ReAct tool loop; collects evidence with the read-only tools.
+  recall       pure Python (Phase 10): looks up this workload's non-eval history in
+               SQLite and hands hypothesize/propose a short, honestly-labeled digest
+               of prior incidents — never a fact to cite in place of fresh evidence,
+               never a confidence modifier in code. See docs/memory-plan.md. Runs
+               AFTER gather (evidence-gathering stays memory-blind by design) and is
+               skipped entirely for eval-mode incidents, which must stay a cold
+               regression test.
   correlate    LLM: builds a timeline + (for cascades) a dependency chain.
   hypothesize  LLM: emits competing root-cause hypotheses, each with a confidence.
   rank         pure Python: sorts hypotheses by confidence — the cheap, deterministic step.
@@ -23,6 +30,7 @@ import anthropic
 from langgraph.graph import END, START, StateGraph
 from rich.console import Console
 
+from .. import history_store
 from ..config import get_settings
 from ..k8s import load_readonly_clients
 from ..observability import get_tracer
@@ -32,12 +40,14 @@ from .prompts import (
     REPORT_INSTRUCTION,
     SYSTEM_PROMPT,
     render_incident,
+    render_memory_digest,
 )
 from .schemas import (
     AgentState,
     Correlation,
     Hypotheses,
     IncidentContext,
+    PriorIncident,
     RCAReport,
     RunResult,
 )
@@ -61,6 +71,38 @@ def _estimate_cost(totals: dict, model: str) -> float:
     return (
         totals["input"] + totals["cache_write"] * 1.25 + totals["cache_read"] * 0.10
     ) * price_in / 1e6 + totals["output"] * price_out / 1e6
+
+
+# Phase 10 (memory) — honest outcome labels for a recalled run. Never hides a bad
+# outcome (a rejected/failed fix is useful memory too) — see docs/memory-plan.md
+# decision 5. Only "execute" mode has a real approval_status; propose/eval runs are
+# collapsed to "outcome unknown" since nothing downstream ever confirmed the fix.
+_OUTCOME_LABELS = {
+    "approved_applied": "applied and approved by a human — this fix was actually used",
+    "rejected": "proposed, but a human rejected this fix",
+    "blocked": "proposed, but this fix failed the safety gate",
+    "dry_run_failed": "proposed, but this fix failed the safety gate",
+    "apply_failed": "proposed, but this fix failed the safety gate",
+}
+_UNKNOWN_OUTCOME = "proposed only — outcome unknown, never applied"
+
+
+def _row_to_prior_incident(row) -> PriorIncident:
+    command = ""
+    try:
+        command = json.loads(row["report_json"]).get("remediation", {}).get("command", "")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    label = _OUTCOME_LABELS.get(row["approval_status"], _UNKNOWN_OUTCOME) if row["mode"] == "execute" else _UNKNOWN_OUTCOME
+    return PriorIncident(
+        run_id=row["id"],
+        when=row["started_at"],
+        category=row["category"],
+        confidence_score=row["confidence_score"],
+        root_cause=row["root_cause"] or "",
+        remediation_command=command,
+        outcome_label=label,
+    )
 
 
 def _build_graph(client, clients, settings, verbose=False, console=None):
@@ -194,6 +236,26 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
 
             return {"messages": messages, "evidence": evidence, "iterations": iterations}
 
+    def recall(state: AgentState) -> dict:
+        # Deterministic, no LLM call — plain Python, same shape as `rank`. Runs AFTER
+        # gather (evidence-gathering stays memory-blind by design) and is skipped
+        # entirely for eval-mode incidents so the harness stays a cold regression
+        # test — see docs/memory-plan.md decisions 1/2/4.
+        with _tracer.start_as_current_span("agent.recall"):
+            incident = state["incident"]
+            if incident.skip_recall:
+                return {"prior_incidents": []}
+            rows = history_store.find_related_runs(incident.namespace, incident.workload, limit=3)
+            prior = [_row_to_prior_incident(r) for r in rows]
+            if console and prior:
+                say(f"\n[bold cyan]▶ recall[/] — {len(prior)} related past incident(s)")
+                for p in prior:
+                    say(
+                        f"  [dim]{p.when}[/] {p.category}: {p.root_cause[:80]} "
+                        f"[dim]({p.outcome_label})[/]"
+                    )
+            return {"prior_incidents": prior}
+
     def correlate(state: AgentState) -> dict:
         with _tracer.start_as_current_span("agent.correlate"):
             say("\n[bold cyan]▶ correlate[/] — building the timeline + dependency chain…")
@@ -209,7 +271,8 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
     def hypothesize(state: AgentState) -> dict:
         with _tracer.start_as_current_span("agent.hypothesize"):
             say("\n[bold cyan]▶ hypothesize[/] — weighing competing root causes…")
-            result: Hypotheses = analyze(state["messages"], HYPOTHESIZE_INSTRUCTION, Hypotheses)
+            digest = render_memory_digest(state["prior_incidents"])
+            result: Hypotheses = analyze(state["messages"], HYPOTHESIZE_INSTRUCTION + digest, Hypotheses)
             hyps = result.hypotheses
             if console:
                 for h in hyps:
@@ -238,7 +301,8 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
             if corr is not None:
                 analysis += "Correlation: " + corr.model_dump_json() + "\n"
             analysis += "Ranked hypotheses (top first): " + Hypotheses(hypotheses=ranked).model_dump_json()
-            report = analyze(state["messages"], analysis + "\n\n" + REPORT_INSTRUCTION, RCAReport)
+            digest = render_memory_digest(state["prior_incidents"])
+            report = analyze(state["messages"], analysis + digest + "\n\n" + REPORT_INSTRUCTION, RCAReport)
 
             if console:
                 price_in, _ = _price_for(settings.agent_model)
@@ -257,12 +321,14 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
 
     g = StateGraph(AgentState)
     g.add_node("gather", gather)
+    g.add_node("recall", recall)
     g.add_node("correlate", correlate)
     g.add_node("hypothesize", hypothesize)
     g.add_node("rank", rank)
     g.add_node("propose", propose)
     g.add_edge(START, "gather")
-    g.add_edge("gather", "correlate")
+    g.add_edge("gather", "recall")
+    g.add_edge("recall", "correlate")
     g.add_edge("correlate", "hypothesize")
     g.add_edge("hypothesize", "rank")
     g.add_edge("rank", "propose")
@@ -294,6 +360,7 @@ def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
             "iterations": 0,
             "correlation": None,
             "hypotheses": [],
+            "prior_incidents": [],
             "report": None,
         }
         final = app.invoke(initial)
@@ -303,6 +370,7 @@ def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
             evidence=final["evidence"],
             correlation=final["correlation"],
             hypotheses=final["hypotheses"],
+            prior_incidents=final["prior_incidents"],
             input_tokens=totals["input"],
             cache_write_tokens=totals["cache_write"],
             cache_read_tokens=totals["cache_read"],

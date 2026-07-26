@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS runs (
     correlation_json TEXT,
     hypotheses_json TEXT,
     report_json TEXT,
-    eval_checks_json TEXT
+    eval_checks_json TEXT,
+    prior_incidents_json TEXT
 )
 """
 
@@ -67,6 +68,11 @@ def _connect() -> sqlite3.Connection:
     # exception — cheap enough at open time for a single-user file, no framework needed.
     try:
         conn.execute("ALTER TABLE runs ADD COLUMN triggered_by TEXT NOT NULL DEFAULT 'manual'")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    # Phase 10 migration: pre-existing DBs lack prior_incidents_json.
+    try:
+        conn.execute("ALTER TABLE runs ADD COLUMN prior_incidents_json TEXT")
     except sqlite3.OperationalError:
         pass  # column already exists
     return conn
@@ -97,8 +103,9 @@ def save_run(
                 incident_name, category, confidence_score, root_cause, cost_usd,
                 input_tokens, cache_write_tokens, cache_read_tokens, output_tokens,
                 approval_status, resolved, triggered_by, evidence_json,
-                correlation_json, hypotheses_json, report_json, eval_checks_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                correlation_json, hypotheses_json, report_json, eval_checks_json,
+                prior_incidents_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 run_id,
@@ -125,6 +132,7 @@ def save_run(
                 json.dumps([h.model_dump() for h in result.hypotheses]),
                 report.model_dump_json(),
                 json.dumps([dataclasses.asdict(c) for c in eval_checks]) if eval_checks else None,
+                json.dumps([p.model_dump() for p in result.prior_incidents]),
             ),
         )
         conn.commit()
@@ -154,6 +162,30 @@ def runs_since(since_iso: str) -> list[sqlite3.Row]:
             "SELECT id, started_at, namespace, alert, triggered_by FROM runs "
             "WHERE started_at >= ? ORDER BY started_at DESC",
             (since_iso,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def find_related_runs(
+    namespace: str, workload: str | None, *, limit: int = 3
+) -> list[sqlite3.Row]:
+    """Most recent non-eval runs for this namespace(+workload), for the agent's own
+    recall step (Phase 10). Excludes mode='eval' in both directions of that phase's
+    isolation rule: eval incidents are synthetic staged fixtures, not organic incident
+    history, and must never be recallable — see docs/memory-plan.md decision 1/4."""
+    conn = _connect()
+    try:
+        if workload is not None:
+            return conn.execute(
+                "SELECT * FROM runs WHERE mode != 'eval' AND namespace = ? AND workload = ? "
+                "ORDER BY started_at DESC LIMIT ?",
+                (namespace, workload, limit),
+            ).fetchall()
+        return conn.execute(
+            "SELECT * FROM runs WHERE mode != 'eval' AND namespace = ? "
+            "ORDER BY started_at DESC LIMIT ?",
+            (namespace, limit),
         ).fetchall()
     finally:
         conn.close()

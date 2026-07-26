@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .schemas import IncidentContext
+from .schemas import IncidentContext, PriorIncident
 
 SYSTEM_PROMPT = """\
 You are an SRE incident investigator for a Kubernetes cluster. You gather evidence \
@@ -84,6 +84,28 @@ REPORT_INSTRUCTION = (
     "values). Propose a single remediation as the exact kubectl command a human would run "
     "— remember it must be approved by a human before anyone runs it.\n\n" + CATEGORY_GUIDE
 )
+
+
+def render_memory_digest(prior: list[PriorIncident]) -> str:
+    """Phase 10 (memory): format the recall step's findings for the LLM to weigh —
+    never a fact to cite in place of fresh evidence, never a confidence modifier in
+    code (see docs/memory-plan.md). Empty string when there's nothing relevant, so no
+    filler text like "no prior incidents found" ever reaches the model."""
+    if not prior:
+        return ""
+    lines = [
+        "\n\nPrior incidents for this workload (for context only — weigh them, don't "
+        "assume they still apply; ground your actual conclusion in THIS investigation's "
+        "evidence):"
+    ]
+    for p in prior:
+        conf = f"{p.confidence_score:.2f}" if p.confidence_score is not None else "?"
+        lines.append(
+            f"- [{p.when}] {p.category or 'unknown'} (confidence {conf}): {p.root_cause}\n"
+            f"  fix proposed: {p.remediation_command}\n"
+            f"  outcome: {p.outcome_label}"
+        )
+    return "\n".join(lines)
 
 
 def render_incident(incident: IncidentContext) -> str:

@@ -114,6 +114,7 @@ INCIDENTS: list[Incident] = [
             namespace="boutique",
             workload="currencyservice",
             alert="currencyservice rollout not progressing (new pod not becoming Ready)",
+            skip_recall=True,  # eval incidents stay memory-blind — see docs/memory-plan.md
         ),
         wait_seconds=30,
         expect_categories={"rollout", "config"},
@@ -132,6 +133,7 @@ INCIDENTS: list[Incident] = [
             namespace="boutique",
             workload="emailservice",
             alert="emailservice pods CrashLoopBackOff, restart count climbing",
+            skip_recall=True,  # eval incidents stay memory-blind — see docs/memory-plan.md
         ),
         wait_seconds=35,
         expect_categories={"workload", "config", "rollout"},
@@ -146,6 +148,7 @@ INCIDENTS: list[Incident] = [
             namespace="boutique",
             workload=None,  # no hint: the agent must trace the dependency chain itself
             alert="checkout and cart requests failing with 500s; frontend up",
+            skip_recall=True,  # eval incidents stay memory-blind — see docs/memory-plan.md
         ),
         wait_seconds=40,
         expect_categories={"dependency"},

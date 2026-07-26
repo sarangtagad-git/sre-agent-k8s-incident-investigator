@@ -13,6 +13,9 @@ class IncidentContext(BaseModel):
     namespace: str
     workload: str | None = None  # e.g. a deployment/pod name, if known
     alert: str | None = None  # the alert text / symptom that triggered us
+    # Phase 10 (memory): eval incidents set this True so the harness stays a cold,
+    # uncontaminated regression test — see docs/memory-plan.md decision 4.
+    skip_recall: bool = False
 
 
 class ToolRecord(BaseModel):
@@ -97,6 +100,21 @@ class RCAReport(BaseModel):
     remediation: Remediation
 
 
+class PriorIncident(BaseModel):
+    """One past run surfaced to the agent by the recall step (Phase 10 — see
+    docs/memory-plan.md). Never used to modify a confidence score in code — it's
+    context for the LLM to weigh, with an honest outcome label so it (and a human
+    reading -v output) can judge how much to trust it."""
+
+    run_id: str
+    when: str  # started_at
+    category: str | None
+    confidence_score: float | None
+    root_cause: str
+    remediation_command: str
+    outcome_label: str  # e.g. "applied and approved by a human"
+
+
 class RunResult(BaseModel):
     """Everything one `investigate()` call produced — the report plus the trail
     behind it (evidence, correlation, ranked hypotheses, cost) — so a caller can
@@ -106,6 +124,7 @@ class RunResult(BaseModel):
     evidence: list[ToolRecord] = Field(default_factory=list)
     correlation: Correlation | None = None
     hypotheses: list[Hypothesis] = Field(default_factory=list)  # ranked, highest first
+    prior_incidents: list[PriorIncident] = Field(default_factory=list)  # what recall saw
     input_tokens: int = 0
     cache_write_tokens: int = 0
     cache_read_tokens: int = 0
@@ -115,7 +134,7 @@ class RunResult(BaseModel):
 
 
 class AgentState(TypedDict):
-    """LangGraph state flowing through gather -> correlate -> hypothesize -> rank -> propose."""
+    """LangGraph state flowing through gather -> recall -> correlate -> hypothesize -> rank -> propose."""
 
     incident: IncidentContext
     messages: list  # Anthropic conversation (content blocks preserved)
@@ -123,4 +142,5 @@ class AgentState(TypedDict):
     iterations: int
     correlation: Correlation | None
     hypotheses: list[Hypothesis]  # ranked (highest confidence first) after the rank node
+    prior_incidents: list[PriorIncident]  # set by the recall node, after gather
     report: RCAReport | None
