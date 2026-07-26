@@ -90,13 +90,24 @@ def render_memory_digest(prior: list[PriorIncident]) -> str:
     """Phase 10 (memory): format the recall step's findings for the LLM to weigh —
     never a fact to cite in place of fresh evidence, never a confidence modifier in
     code (see docs/memory-plan.md). Empty string when there's nothing relevant, so no
-    filler text like "no prior incidents found" ever reaches the model."""
+    filler text like "no prior incidents found" ever reaches the model.
+
+    Hardened after a live stress test (re-investigating one persisting incident 6
+    times): confidence itself stayed bounded (plateaued ~0.90, no runaway climb), but
+    the model's own language started treating 3 near-identical, closely-timed priors
+    as "multiple independent confirmations" when they were really one fault observed
+    repeatedly. The instruction below calls that out explicitly."""
     if not prior:
         return ""
     lines = [
         "\n\nPrior incidents for this workload (for context only — weigh them, don't "
         "assume they still apply; ground your actual conclusion in THIS investigation's "
-        "evidence):"
+        "evidence). If several of these describe the same fault (same revision/"
+        "ReplicaSet, timestamps close together), that is ONE underlying event observed "
+        "repeatedly, not independent confirmation — do not let the COUNT of similar "
+        "prior entries raise your confidence. Your confidence score must be justified "
+        "by today's fresh evidence alone; a prior incident can inform your framing, but "
+        "repetition of the same past conclusion is not itself new evidence:"
     ]
     for p in prior:
         conf = f"{p.confidence_score:.2f}" if p.confidence_score is not None else "?"

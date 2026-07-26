@@ -41,6 +41,17 @@ def test_hedging_language_present_so_the_model_does_not_treat_it_as_fact():
     assert "ground your actual conclusion" in digest.lower()
 
 
+def test_anti_false_corroboration_language_present():
+    # Added after a live stress test showed the model describing 3 near-identical,
+    # closely-timed priors as "multiple independent confirmations" — this instruction
+    # heads that off explicitly. See render_memory_digest's docstring.
+    digest = render_memory_digest([_prior(), _prior(when="2026-07-24T20:10:00")])
+    lowered = digest.lower()
+    assert "not independent confirmation" in lowered
+    assert "today's fresh evidence" in lowered
+    assert "not itself new evidence" in lowered
+
+
 def test_missing_confidence_score_renders_as_unknown_not_a_crash():
     digest = render_memory_digest([_prior(confidence_score=None)])
     assert "confidence ?" in digest

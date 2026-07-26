@@ -243,6 +243,66 @@ auditable later — "why did it say this?" can include "here's what it remembere
    correctness — the data will already be sitting in `prior_incidents_json` waiting for
    it, so this can always be a fast follow-up later instead of blocking the phase.
 
+## Live calibration finding (2026-07-26) — echo-chamber stress test
+
+Built and shipped, then stress-tested before being trusted: staged one incident once
+and ran `investigate -v` against it **6 times in a row without reverting** (the
+realistic risk case — a persisting issue investigated repeatedly, memory accumulating
+echoes of its own past conclusions). Full sequence:
+
+| # | confidence | category | prior shown |
+|---|---|---|---|
+| 1 | 0.85 | workload | 0 |
+| 2 | 0.90 | workload | 1 |
+| 3 | 0.90 | workload | 2 |
+| 4 | 0.90 | workload | 3 |
+| 5 | 0.92 | rollout  | 3 |
+| 6 | 0.85 | workload | 3 |
+
+**No runaway confidence drift.** It plateaued around 0.90 and dropped back to 0.85 on
+the last run — not the monotonic climb toward 1.0 that unbounded reinforcement would
+produce. Evidence-gathering also stayed rigorous every time (3-4 fresh tool calls each
+run, no shrinkage) — `gather` never sees memory, and this confirms it behaves that way
+in practice, not just in the code path.
+
+**The category flip at run 5 (workload → rollout) is not a memory artifact.** All 3
+priors shown to run 5 were labeled `workload`, yet the model chose `rollout` anyway —
+proof it isn't just copying memory's label. This specific incident's own ground truth
+in `evals.py` already accepts `{"workload", "config", "rollout"}` as correct — the
+ambiguity is inherent to "a rollout that broke the pod spec," not something memory
+introduced.
+
+**The real finding: false corroboration in the model's own language, not the number.**
+By runs 5-6, the RCA text described the 3 recalled priors as *"multiple independent
+confirmations"* / *"three prior incident investigations independently pinned..."* —
+but those 3 "prior incidents" are the same staged fault, re-investigated by me within
+about an hour, not three separate real-world occurrences. The digest correctly
+timestamped each entry, but nothing told the model that near-identical, closely-timed
+entries are one event observed repeatedly, not independent evidence. This is exactly
+the risk decision 3 (memory-plan.md, above) was written to guard against — it showed
+up in the narrative more than in the confidence score, but it's real.
+
+**Mitigation shipped the same session:** `render_memory_digest()` now explicitly
+instructs the model that near-identical, closely-timed priors are ONE underlying event
+observed repeatedly, not independent confirmation, and that the confidence score must
+be justified by today's fresh evidence alone — repetition of a past conclusion is not
+itself new evidence. Test added (`test_anti_false_corroboration_language_present` in
+`tests/test_memory.py`) asserting this language is present in the digest. **Not yet
+re-verified live** with the hardened prompt — the original stress-test data above
+predates this change. If revisiting, the next check is whether the same 6-repeat
+stress test still shows "multiple independent confirmations"-style language after the
+fix, or whether the model now correctly frames it as one recurring event.
+
+**Optimum-strategy takeaway** (answers the "ignore memory vs. over-trust it" question
+directly): the risk was never really in the score — a single number is easy to keep
+bounded and this test showed it stayed bounded even before the fix. The risk is in the
+*narrative epistemics*: whether the model correctly distinguishes "I've seen this
+exact thing before" (weak evidence, especially when the priors are close together in
+time and describe the identical fault) from "multiple different incidents converged on
+this cause" (strong evidence). Getting that distinction right in the prompt is the
+actual lever — not a numeric cap or a mechanical decay function in code, which would
+be exactly the kind of code-side confidence modifier decision 3 rules out.
+
 ## Explicitly out of scope (this phase)
 
 - Vector/embedding-based semantic retrieval — plain SQL match is enough at this data
