@@ -398,6 +398,16 @@ def history(
     console.print(f"\n[bold]Root cause[/] ({report['category']}, {report['confidence']} · {report['confidence_score']:.2f}):")
     console.print(f"  {report['root_cause']}")
     console.print(f"\n[bold]Impact:[/] {report['impact']}")
+
+    if report.get("evidence"):
+        console.print("\n[bold]Evidence:[/]")
+        for e in report["evidence"]:
+            console.print(f"  • {e}")
+    if report.get("alternatives"):
+        console.print("\n[bold]Alternatives considered:[/]")
+        for a in report["alternatives"]:
+            console.print(f"  • [dim]{a}[/]")
+
     rem = report["remediation"]
     console.print(
         Panel(

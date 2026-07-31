@@ -149,6 +149,13 @@ html, body, [data-testid="stAppViewContainer"] * {
 .verdict .band { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ember); font-weight: 700; }
 .impact { font-size: 0.8rem; color: var(--ink); margin-top: 0.55rem; }
 
+/* cited evidence / alternatives — the RCA's own free-text citations (report.evidence,
+   report.alternatives), distinct from "Evidence gathered" (the raw tool-call trail). */
+.citelist { font-size: 0.8rem; line-height: 1.55; }
+.citelist .item { margin: 0.32rem 0; padding-left: 0.9rem; position: relative; }
+.citelist .item::before { content: "•"; position: absolute; left: 0; color: var(--muted); }
+.citelist .item.dim { color: var(--muted); }
+
 /* remediation */
 .fixbox { background: var(--moss-soft); border-radius: 9px; padding: 0.8rem 0.95rem; font-size: 0.8rem; }
 .fixbox .why { color: var(--muted); font-size: 0.76rem; margin-top: 0.25rem; }
@@ -338,6 +345,13 @@ def _remediation_status(row: sqlite3.Row) -> tuple[str, str, str]:
 
 def _scard(label: str, inner: str) -> str:
     return f'<div class="scard"><div class="scard-label">{esc(label)}</div>{inner}</div>'
+
+
+def _bullet_list(items: list[str], dim: bool = False) -> str:
+    """Render report.evidence / report.alternatives — the RCA's own free-text
+    citations, distinct from the tool-call trail rendered by _evidence_html()."""
+    cls = "item dim" if dim else "item"
+    return '<div class="citelist">' + "".join(f'<div class="{cls}">{esc(i)}</div>' for i in items) + "</div>"
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +684,18 @@ def _render_detail(row: sqlite3.Row, number: int) -> None:
         if report.get("impact"):
             verdict += f'<div class="impact"><b>Impact:</b> {esc(report["impact"])}</div>'
         st.markdown(_scard("Root cause", verdict), unsafe_allow_html=True)
+
+        # the RCA's own cited evidence (report.evidence) -- NOT the tool-call trail;
+        # that's the separate "Evidence gathered" card in the right column below.
+        if report.get("evidence"):
+            st.markdown(_scard("Evidence cited", _bullet_list(report["evidence"])), unsafe_allow_html=True)
+
+        # alternatives the model considered and rejected
+        if report.get("alternatives"):
+            st.markdown(
+                _scard("Alternatives considered", _bullet_list(report["alternatives"], dim=True)),
+                unsafe_allow_html=True,
+            )
 
         # remediation + who applied it
         why = f'<div class="why">{esc(rem.get("rationale"))}</div>' if rem.get("rationale") else ""
