@@ -100,14 +100,16 @@ def render_memory_digest(prior: list[PriorIncident]) -> str:
     if not prior:
         return ""
     lines = [
-        "\n\nPrior incidents for this workload (for context only — weigh them, don't "
-        "assume they still apply; ground your actual conclusion in THIS investigation's "
-        "evidence). If several of these describe the same fault (same revision/"
-        "ReplicaSet, timestamps close together), that is ONE underlying event observed "
-        "repeatedly, not independent confirmation — do not let the COUNT of similar "
-        "prior entries raise your confidence. Your confidence score must be justified "
-        "by today's fresh evidence alone; a prior incident can inform your framing, but "
-        "repetition of the same past conclusion is not itself new evidence:"
+        "\n\nPrior incidents for this workload — for context only, not fact.\n"
+        "Weigh them, but don't assume they still apply; ground your actual "
+        "conclusion in THIS investigation's evidence.\n"
+        "If several of these describe the SAME fault (same revision/ReplicaSet, "
+        "timestamps close together), that is ONE underlying event observed "
+        "repeatedly, not independent confirmation — do not let the COUNT of "
+        "similar prior entries raise your confidence.\n"
+        "Your confidence score must be justified by today's fresh evidence alone; "
+        "a prior incident can inform your framing, but repetition of the same "
+        "past conclusion is not itself new evidence:"
     ]
     for p in prior:
         conf = f"{p.confidence_score:.2f}" if p.confidence_score is not None else "?"
