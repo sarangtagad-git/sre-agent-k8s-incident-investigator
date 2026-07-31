@@ -399,7 +399,13 @@ would have looked complete and been quietly wrong.
 - An active feedback loop that re-checks whether an applied fix actually held over time
   (e.g., re-investigating a workload a day later to confirm resolution) — the outcome
   labels in decision 5 use only what's already recorded (`approval_status`), not a new
-  monitoring mechanism.
+  monitoring mechanism. **UPDATE (2026-07-31): this stopped being purely theoretical
+  once the second calibration fix told the model to trust `"applied and approved by a
+  human"` as legitimate strengthening evidence — that label can be true even when the
+  underlying fix silently didn't work.** Scoped as its own phase in
+  `docs/verification-plan.md` (Phase 11): a bounded synchronous poll of
+  `get_workload_status` right after apply, not the re-investigate-later feedback loop
+  described above — narrower, but closes the actual gap this note was flagging.
 - Dashboard "Similar past incidents" UI — data-ready, UI deferred (step 8 above).
 
 ## Open questions — defaults chosen, confirm before/while building
