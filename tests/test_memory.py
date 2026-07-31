@@ -72,6 +72,20 @@ def test_multiple_prior_incidents_all_appear():
     assert "second incident's root cause" in digest
 
 
+def test_confirmed_outcome_carveout_language_present():
+    # Added after a second live stress test: the first hardening (anti-corroboration)
+    # over-corrected — the model stopped citing an "applied and approved by a human"
+    # prior too, treating it the same as a repeated unverified guess. This carve-out
+    # tells the model those are different in kind. See render_memory_digest's docstring.
+    digest = render_memory_digest([_prior()])
+    lowered = digest.lower()
+    assert "different in kind" in lowered
+    assert "confirmed real-world outcome" in lowered
+    assert "legitimate evidence" in lowered
+    # the anti-corroboration language for unverified repeats must still be present too
+    assert "unverified" in lowered
+
+
 def test_rejected_outcome_is_not_hidden():
     # A rejected/failed fix is useful memory too — decision 5 in memory-plan.md says
     # never hide a bad outcome.

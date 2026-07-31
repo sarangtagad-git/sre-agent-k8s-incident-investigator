@@ -96,11 +96,18 @@ def render_memory_digest(prior: list[PriorIncident]) -> str:
     code (see docs/memory-plan.md). Empty string when there's nothing relevant, so no
     filler text like "no prior incidents found" ever reaches the model.
 
-    Hardened after a live stress test (re-investigating one persisting incident 6
-    times): confidence itself stayed bounded (plateaued ~0.90, no runaway climb), but
-    the model's own language started treating 3 near-identical, closely-timed priors
-    as "multiple independent confirmations" when they were really one fault observed
-    repeatedly. The instruction below calls that out explicitly."""
+    Hardened twice, from two live stress tests:
+    1. Re-investigating one persisting incident 6 times: confidence stayed bounded
+       (no runaway climb), but the model's language started treating 3 near-identical,
+       closely-timed priors as "multiple independent confirmations" of its OWN
+       unverified guess. Fixed by telling it that's one event observed repeatedly,
+       not independent confirmation.
+    2. That fix over-corrected: re-tested with a prior whose outcome was "a human
+       approved and applied this exact fix" (a confirmed real-world result, not a
+       repeated guess) — the model stopped citing it too, treating all memory as
+       equally uncitable. Fixed below by carving that case out explicitly: repetition
+       of an unverified guess still doesn't count, but a human-confirmed outcome is a
+       different kind of evidence and should be used."""
     if not prior:
         return ""
     lines = [
@@ -108,12 +115,20 @@ def render_memory_digest(prior: list[PriorIncident]) -> str:
         "Weigh them, but don't assume they still apply; ground your actual "
         "conclusion in THIS investigation's evidence.\n"
         "If several of these describe the SAME fault (same revision/ReplicaSet, "
-        "timestamps close together), that is ONE underlying event observed "
-        "repeatedly, not independent confirmation — do not let the COUNT of "
-        "similar prior entries raise your confidence.\n"
-        "Your confidence score must be justified by today's fresh evidence alone; "
-        "a prior incident can inform your framing, but repetition of the same "
-        "past conclusion is not itself new evidence:"
+        "timestamps close together) and were only ever proposed, never applied, "
+        "that is ONE unverified guess observed repeatedly, not independent "
+        "confirmation — do not let the COUNT of similar unverified entries raise "
+        "your confidence.\n"
+        "An entry whose outcome says a human already approved and applied that "
+        "exact fix is different in kind — a confirmed real-world outcome, not a "
+        "repeated guess.\n"
+        "If today's evidence points to the same root cause and fix, say so "
+        "explicitly and let that confirmed outcome strengthen your remediation "
+        "rationale (and, if the cause genuinely matches, your confidence) — that "
+        "IS legitimate evidence, not the pattern to avoid.\n"
+        "Your confidence score must be justified by today's fresh evidence alone "
+        "plus any such confirmed outcomes; repetition of unverified past guesses "
+        "is not itself new evidence:"
     ]
     for p in prior:
         conf = f"{p.confidence_score:.2f}" if p.confidence_score is not None else "?"
