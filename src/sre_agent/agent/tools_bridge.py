@@ -29,10 +29,11 @@ ANTHROPIC_TOOLS: list[dict[str, Any]] = [
         "name": "get_workload_status",
         "description": (
             "List deployments and pods in a namespace (like `kubectl get deploy` + "
-            "`get pods`). Returns status, ready, restarts, and a headline `reason` per "
-            "pod (e.g. ImagePullBackOff, CrashLoopBackOff). Start here. NOTE: a pod can "
-            "be Ready and still be failing its dependency — do not treat Ready as proof "
-            "it works."
+            "`get pods`).\n"
+            "Returns status, ready, restarts, and a headline `reason` per pod "
+            "(e.g. ImagePullBackOff, CrashLoopBackOff). Start here.\n"
+            "NOTE: a pod can be Ready and still be failing its dependency — do not "
+            "treat Ready as proof it works."
         ),
         "input_schema": {
             "type": "object",
@@ -46,10 +47,10 @@ ANTHROPIC_TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_pod_events",
         "description": (
-            "Get Kubernetes events for a pod (the Events section of `kubectl describe`). "
+            "Get Kubernetes events for a pod (the Events section of `kubectl describe`).\n"
             "The smoking gun for ImagePullBackOff (reason/message names why the pull "
-            "failed: NotFound vs auth vs network) and scheduling failures. Events are "
-            "ephemeral (~1h)."
+            "failed: NotFound vs auth vs network) and scheduling failures.\n"
+            "Events are ephemeral (~1h)."
         ),
         "input_schema": {
             "type": "object",
@@ -63,10 +64,10 @@ ANTHROPIC_TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_pod_logs",
         "description": (
-            "Get a pod container's logs (`kubectl logs`). For CrashLoopBackOff set "
-            "previous=true to read the crashed instance's logs (where the real error "
-            "is). For ImagePullBackOff logs are useless (nothing ran) — use events "
-            "instead."
+            "Get a pod container's logs (`kubectl logs`).\n"
+            "For CrashLoopBackOff set previous=true to read the crashed instance's "
+            "logs (where the real error is).\n"
+            "For ImagePullBackOff logs are useless (nothing ran) — use events instead."
         ),
         "input_schema": {
             "type": "object",
@@ -84,8 +85,9 @@ ANTHROPIC_TOOLS: list[dict[str, Any]] = [
         "name": "get_rollout_history",
         "description": (
             "Deployment revision history with the image(s) per revision "
-            "(`kubectl rollout history`). Answers 'what changed and when?' — e.g. an "
-            "image tag flipped to a broken value at revision N."
+            "(`kubectl rollout history`).\n"
+            "Answers 'what changed and when?' — e.g. an image tag flipped to a "
+            "broken value at revision N."
         ),
         "input_schema": {
             "type": "object",
@@ -100,8 +102,9 @@ ANTHROPIC_TOOLS: list[dict[str, Any]] = [
         "name": "query_prometheus",
         "description": (
             "Run an instant PromQL query against Prometheus (golden signals: error "
-            "rate, latency, saturation). Use to quantify user impact and correlate "
-            "timing, especially for cascades where no pod looks unhealthy."
+            "rate, latency, saturation).\n"
+            "Use to quantify user impact and correlate timing, especially for "
+            "cascades where no pod looks unhealthy."
         ),
         "input_schema": {
             "type": "object",
