@@ -287,11 +287,38 @@ instructs the model that near-identical, closely-timed priors are ONE underlying
 observed repeatedly, not independent confirmation, and that the confidence score must
 be justified by today's fresh evidence alone — repetition of a past conclusion is not
 itself new evidence. Test added (`test_anti_false_corroboration_language_present` in
-`tests/test_memory.py`) asserting this language is present in the digest. **Not yet
-re-verified live** with the hardened prompt — the original stress-test data above
-predates this change. If revisiting, the next check is whether the same 6-repeat
-stress test still shows "multiple independent confirmations"-style language after the
-fix, or whether the model now correctly frames it as one recurring event.
+`tests/test_memory.py`) asserting this language is present in the digest.
+
+**Re-verified live (2026-07-31) — the fix worked, more strongly than expected.**
+Re-ran the same experiment (stage once, `investigate -v` repeatedly without reverting)
+with the hardened digest, against a history that already had 3 near-duplicate priors
+queued up from the round above:
+
+| # | confidence | band | category | prior shown |
+|---|---|---|---|---|
+| 7 | 0.75 | medium | rollout | 3 |
+| 8 | 0.78 | medium | rollout | 3 |
+| 9 | 0.72 | medium | rollout | 3 |
+
+Two changes, both in the right direction:
+1. **The false-corroboration language is gone, not just softened.** Every RCA's
+   Evidence and root-cause sections were checked across all 3 runs — none of them
+   mention the recalled priors at all. Before the fix, the same 3-priors condition
+   produced explicit citations like *"three prior incident investigations independently
+   pinned..."*. After the fix, the model still received the digest every time (`recall`
+   fired with 3 hits each run) but stopped treating those priors as citable evidence —
+   every Evidence list is grounded only in that run's own fresh tool output.
+2. **Confidence band dropped from high to medium** (0.85-0.92 before → 0.72-0.78
+   after) with the identical 3 priors shown each time. This is the more telling
+   result: before the fix, repeated priors correlated with confidence climbing into
+   "high"; after, the model no longer lets repetition nudge it there. A quantitative
+   confirmation, not just a linguistic one.
+
+The category settling on `rollout` in all 3 hardened runs (vs. a workload/rollout mix
+before) is not read as a memory artifact — this incident's own eval ground truth
+already accepts both categories as correct, the digest itself still had a mix of
+workload- and rollout-labeled priors, and nothing in the instruction targets category
+choice. Treated as ordinary variance on a genuinely boundary-line incident.
 
 **Optimum-strategy takeaway** (answers the "ignore memory vs. over-trust it" question
 directly): the risk was never really in the score — a single number is easy to keep
