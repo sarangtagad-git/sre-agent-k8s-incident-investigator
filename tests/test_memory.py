@@ -86,6 +86,46 @@ def test_confirmed_outcome_carveout_language_present():
     assert "unverified" in lowered
 
 
+def test_mixed_digest_keeps_both_instructions_and_labels_entries_correctly():
+    # The realistic case both live stress tests actually exercised: a digest with
+    # BOTH kinds of prior at once -- two unverified repeats of the same guess (should
+    # stay uncited) and one human-confirmed outcome (should be usable). Guards against
+    # a future edit to render_memory_digest() that fixes one instruction by weakening
+    # or dropping the other -- see docs/memory-plan.md's two calibration findings.
+    unverified_outcome = "proposed only — outcome unknown, never applied"
+    confirmed_outcome = "applied and approved by a human — this fix was actually used"
+    mixed = [
+        _prior(
+            when="2026-07-31T17:10:09",
+            root_cause="revision 26 broken pod spec",
+            outcome_label=unverified_outcome,
+        ),
+        _prior(
+            when="2026-07-31T17:08:23",
+            root_cause="revision 24 broken pod spec",
+            outcome_label=confirmed_outcome,
+        ),
+        _prior(
+            when="2026-07-31T04:43:58",
+            root_cause="revision 22 broken pod spec",
+            outcome_label=unverified_outcome,
+        ),
+    ]
+    digest = render_memory_digest(mixed)
+    lowered = digest.lower()
+
+    # both instructions must coexist in the same digest
+    assert "not independent confirmation" in lowered  # anti-corroboration (fix 1)
+    assert "not itself new evidence" in lowered
+    assert "different in kind" in lowered  # carve-out (fix 2)
+    assert "legitimate evidence" in lowered
+
+    # each entry's own outcome label must render distinctly and correctly -- an
+    # unverified entry must never pick up the confirmed wording or vice versa
+    assert digest.count(f"outcome: {unverified_outcome}") == 2
+    assert digest.count(f"outcome: {confirmed_outcome}") == 1
+
+
 def test_rejected_outcome_is_not_hidden():
     # A rejected/failed fix is useful memory too — decision 5 in memory-plan.md says
     # never hide a bad outcome.
