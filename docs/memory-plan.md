@@ -330,6 +330,64 @@ this cause" (strong evidence). Getting that distinction right in the prompt is t
 actual lever — not a numeric cap or a mechanical decay function in code, which would
 be exactly the kind of code-side confidence modifier decision 3 rules out.
 
+## Second calibration finding (2026-07-31) — the fix over-corrected
+
+Round 1's fix was strong enough to raise a new question: had it swung too far, so the
+model now ignores memory even when it *should* count? Tested directly by creating a
+genuinely different kind of evidence — not another unverified guess, but a **confirmed
+real-world outcome**.
+
+Ran `investigate -x` (auto-approved) against a staged incident: the approval gate ran
+for real (dry-run → confirm → apply → verify) and produced the project's first-ever
+`execute`/`approved_applied` history row. Re-staged the identical fault and ran
+`investigate` again. The digest that reached the model had this as its most recent,
+most prominent entry:
+
+> `outcome: "applied and approved by a human — this fix was actually used"`
+
+**The model didn't use it.** Every Evidence bullet, every line of the remediation
+rationale, was grounded only in that run's fresh tool output. The one prior incident
+that should have mattered most — a human-confirmed fix for the exact same fault —
+went completely uncited, indistinguishable from the unverified repeats the Round 1 fix
+was designed to suppress. The instruction ("repetition of the same past conclusion is
+not itself new evidence") had generalized further than intended: the model applied
+"don't trust repetition" to *all* memory, not just repetition of its own unverified
+guesses.
+
+**Fix:** `render_memory_digest()` now explicitly carves this case out. Repetition of
+an entry that was only ever *proposed* (never applied) still doesn't count as new
+evidence. But an entry whose outcome says a human already approved and applied that
+exact fix is named as categorically different — "a confirmed real-world outcome, not
+a repeated guess" — and the model is told to use it: cite it, and let it strengthen
+the remediation rationale (and confidence, if today's evidence genuinely matches).
+
+**Re-verified live, same session.** With the same mixed digest (2 unverified priors +
+1 approved_applied prior) reaching a fresh investigation, the RCA now reads:
+
+> Evidence: *"Prior incident 2026-07-31T17:08:23 (rev 24, same ReplicaSet ..., same
+> crash signature) had its rollback fix ... **applied and approved by a human**,
+> confirming rollback is an effective, **previously-validated remedy** for this exact
+> fault pattern"*
+>
+> Remediation rationale: *"This mirrors a prior incident with the same crash signature
+> where an equivalent rollback was reviewed and approved by a human."*
+
+Both citations point *only* at the approved_applied entry. Neither of the other two
+unverified priors appears anywhere in the report — the false-corroboration suppression
+from Round 1 held. Confidence came back up to 0.88 (high band), but this time with an
+explicit, sound justification (a validated remedy plus fresh evidence) rather than bare
+repetition count — the correct kind of confidence increase, not the kind Round 1 was
+built to prevent.
+
+**Revised optimum-strategy takeaway:** getting memory calibration right isn't one fix,
+it's a balance that has to be checked from both directions. Round 1 alone would have
+shipped a model that's *safe but wasteful* — it throws away the single most valuable
+kind of memory this system can produce (a human-validated outcome) along with the
+kind it should discard. The full picture only appeared by testing both failure modes
+explicitly: stage the same fault repeatedly (tests over-trust), then stage it once
+more against a validated prior (tests under-use). Shipping after only the first test
+would have looked complete and been quietly wrong.
+
 ## Explicitly out of scope (this phase)
 
 - Vector/embedding-based semantic retrieval — plain SQL match is enough at this data
