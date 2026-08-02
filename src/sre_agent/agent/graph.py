@@ -77,8 +77,26 @@ def _estimate_cost(totals: dict, model: str) -> float:
 # outcome (a rejected/failed fix is useful memory too) — see docs/memory-plan.md
 # decision 5. Only "execute" mode has a real approval_status; propose/eval runs are
 # collapsed to "outcome unknown" since nothing downstream ever confirmed the fix.
+#
+# Phase 11 (verification) splits "approved_applied" into three further shades based
+# on whether the fix was actually checked to have worked — see
+# docs/verification-plan.md decision 6. A human approving a command is no longer an
+# unconditionally positive signal; its polarity depends on what verification saw.
+_APPROVED_OUTCOME_LABELS = {
+    "confirmed_healthy": (
+        "applied and approved by a human, verified healthy immediately after "
+        "applying (a bounded check, not a permanent guarantee)"
+    ),
+    "still_unhealthy": (
+        "applied and approved by a human, but verification found the issue did NOT "
+        "resolve — do not propose this same fix again without new evidence"
+    ),
+}
+_APPROVED_UNVERIFIED = (
+    "applied and approved by a human (not independently verified whether it "
+    "resolved the issue)"
+)
 _OUTCOME_LABELS = {
-    "approved_applied": "applied and approved by a human — this fix was actually used",
     "rejected": "proposed, but a human rejected this fix",
     "blocked": "proposed, but this fix failed the safety gate",
     "dry_run_failed": "proposed, but this fix failed the safety gate",
@@ -93,7 +111,12 @@ def _row_to_prior_incident(row) -> PriorIncident:
         command = json.loads(row["report_json"]).get("remediation", {}).get("command", "")
     except (TypeError, ValueError, json.JSONDecodeError):
         pass
-    label = _OUTCOME_LABELS.get(row["approval_status"], _UNKNOWN_OUTCOME) if row["mode"] == "execute" else _UNKNOWN_OUTCOME
+    if row["mode"] != "execute":
+        label = _UNKNOWN_OUTCOME
+    elif row["approval_status"] == "approved_applied":
+        label = _APPROVED_OUTCOME_LABELS.get(row["verification_status"], _APPROVED_UNVERIFIED)
+    else:
+        label = _OUTCOME_LABELS.get(row["approval_status"], _UNKNOWN_OUTCOME)
     return PriorIncident(
         run_id=row["id"],
         when=row["started_at"],

@@ -96,7 +96,7 @@ def render_memory_digest(prior: list[PriorIncident]) -> str:
     code (see docs/memory-plan.md). Empty string when there's nothing relevant, so no
     filler text like "no prior incidents found" ever reaches the model.
 
-    Hardened twice, from two live stress tests:
+    Hardened three times, from three live stress tests:
     1. Re-investigating one persisting incident 6 times: confidence stayed bounded
        (no runaway climb), but the model's language started treating 3 near-identical,
        closely-timed priors as "multiple independent confirmations" of its OWN
@@ -107,7 +107,12 @@ def render_memory_digest(prior: list[PriorIncident]) -> str:
        repeated guess) — the model stopped citing it too, treating all memory as
        equally uncitable. Fixed below by carving that case out explicitly: repetition
        of an unverified guess still doesn't count, but a human-confirmed outcome is a
-       different kind of evidence and should be used."""
+       different kind of evidence and should be used.
+    3. Phase 11 (verification) added a third shade: "approved and applied" no longer
+       always means "worked" — a bounded post-apply health check can also find the
+       fix did NOT resolve the issue (`still_unhealthy`). A label alone doesn't stop
+       the model from proposing the identical failed fix again, so the instruction
+       below is directive, not just descriptive, for that case."""
     if not prior:
         return ""
     lines = [
@@ -126,6 +131,14 @@ def render_memory_digest(prior: list[PriorIncident]) -> str:
         "explicitly and let that confirmed outcome strengthen your remediation "
         "rationale (and, if the cause genuinely matches, your confidence) — that "
         "IS legitimate evidence, not the pattern to avoid.\n"
+        "An entry whose outcome says the fix was applied but verification found the "
+        "issue did NOT resolve is a WARNING, not neutral information.\n"
+        "If today's evidence points to the same root cause as that failed entry, do "
+        "NOT propose that same fix again without explaining why this time is "
+        "different — propose a genuinely different remediation, or state plainly "
+        "that the obvious fix was already tried and failed and deeper investigation "
+        "(or human escalation) is warranted, and let that LOWER your confidence in "
+        "the old hypothesis rather than leaving it neutral.\n"
         "Your confidence score must be justified by today's fresh evidence alone "
         "plus any such confirmed outcomes; repetition of unverified past guesses "
         "is not itself new evidence:"

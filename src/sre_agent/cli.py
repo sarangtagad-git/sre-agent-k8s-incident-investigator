@@ -201,8 +201,20 @@ def investigate(
     )
 
     approval_status = "n/a"
+    verification_status: str | None = None
+    verification_detail: str | None = None
     if execute:
         approval_status = _approval_gate(rem.command, reversible=rem.reversible)
+        if approval_status == "approved_applied":
+            verification = _verify_recovery_and_report(namespace, workload)
+            verification_status = verification.status
+            verification_detail = verification.detail
+
+    # Phase 11: "resolved" now reflects what verification actually observed, not just
+    # whether the apply command errored — confirmed_healthy/still_unhealthy are the
+    # only statuses that answer the question either way; not_checked (or no
+    # verification at all) stays an honest "we don't know" rather than assuming success.
+    resolved = {"confirmed_healthy": True, "still_unhealthy": False}.get(verification_status)
 
     run_id = history_store.save_run(
         result,
@@ -211,7 +223,9 @@ def investigate(
         alert=alert,
         mode="execute" if execute else "propose",
         approval_status=approval_status,
-        resolved=True if approval_status == "approved_applied" else None,
+        resolved=resolved,
+        verification_status=verification_status,
+        verification_detail=verification_detail,
     )
     console.print(f"\n[dim]saved as run {run_id} — see `sre-agent history {run_id}`[/]")
 
@@ -512,8 +526,52 @@ def _approval_gate(command: str, reversible: bool = True) -> str:
         console.print(f"  [dim]$ {' '.join(args)}[/]")
         for line in (out or err).strip().splitlines():
             console.print(f"    [dim]{line}[/]")
-    console.print("\n[green]✓ Applied.[/] Re-run `sre-agent status` to confirm recovery.")
+    # Phase 11 verifies recovery right after this returns (see investigate()) — this
+    # message only ever meant "the apply command didn't error," never "it worked."
+    console.print("\n[green]✓ Apply command succeeded.[/]")
     return "approved_applied"
+
+
+def _verify_recovery_and_report(namespace: str, workload: str | None) -> "VerificationResult":
+    """Phase 11: after an apply succeeds, actually check whether the workload
+    recovered — instead of trusting that the kubectl command not erroring meant the
+    incident is resolved. Uses the agent's own READ-ONLY identity (verification is
+    pure observation), not the operator's kubeconfig used for the apply itself. See
+    docs/verification-plan.md."""
+    from .config import get_settings
+    from .k8s import load_readonly_clients
+    from .remediation import VerificationResult, verify_recovery
+    from .tools import get_workload_status
+
+    settings = get_settings()
+    if not settings.verify_after_apply:
+        return VerificationResult("not_checked", "verification disabled (VERIFY_AFTER_APPLY=false)")
+
+    clients = load_readonly_clients()
+
+    def check() -> "NamespaceWorkloadStatus":  # noqa: F821 - imported for typing only
+        return get_workload_status(namespace, clients=clients)
+
+    console.print(
+        f"\n[bold]Verifying recovery…[/] [dim](up to {settings.verify_timeout_s}s, "
+        f"needs {settings.verify_stability_checks} consecutive healthy checks)[/]"
+    )
+    result = verify_recovery(
+        workload, check,
+        timeout_s=settings.verify_timeout_s,
+        poll_interval_s=settings.verify_poll_interval_s,
+        stability_checks=settings.verify_stability_checks,
+    )
+    if result.status == "confirmed_healthy":
+        console.print(f"[green]✓ Recovery confirmed.[/] [dim]{result.detail}[/]")
+    elif result.status == "still_unhealthy":
+        console.print(
+            f"[red]⚠ Applied, but recovery was NOT confirmed — investigate again.[/] "
+            f"[dim]{result.detail}[/]"
+        )
+    else:  # not_checked
+        console.print(f"[yellow]— Recovery not independently verified:[/] [dim]{result.detail}[/]")
+    return result
 
 
 if __name__ == "__main__":

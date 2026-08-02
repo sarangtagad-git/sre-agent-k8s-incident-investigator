@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     alert_cooldown_minutes: int = 30  # per (namespace, alertname)
     alert_listen_port: int = 9095
 
+    # Phase 11: verify an applied fix actually resolved the incident, instead of
+    # trusting "the kubectl command didn't error" — see docs/verification-plan.md.
+    verify_after_apply: bool = True
+    verify_timeout_s: int = 90
+    verify_poll_interval_s: int = 5
+    verify_stability_checks: int = 3  # consecutive healthy polls required
+
 
 def get_settings() -> Settings:
     """Return process settings. Kept as a function for easy test overrides."""

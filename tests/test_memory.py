@@ -86,6 +86,24 @@ def test_confirmed_outcome_carveout_language_present():
     assert "unverified" in lowered
 
 
+def test_failed_fix_directive_language_present():
+    # Phase 11 (verification): a still_unhealthy outcome must not just be described,
+    # it must actively steer the model away from repeating the same failed fix. See
+    # docs/verification-plan.md decision 7 and render_memory_digest's docstring.
+    digest = render_memory_digest([_prior(
+        outcome_label="applied and approved by a human, but verification found the "
+                      "issue did NOT resolve — do not propose this same fix again "
+                      "without new evidence",
+    )])
+    lowered = digest.lower()
+    assert "warning" in lowered
+    assert "do not propose that same fix again" in lowered
+    assert "lower your confidence" in lowered
+    # the earlier two instructions must still both be present alongside this one
+    assert "not independent confirmation" in lowered
+    assert "different in kind" in lowered
+
+
 def test_mixed_digest_keeps_both_instructions_and_labels_entries_correctly():
     # The realistic case both live stress tests actually exercised: a digest with
     # BOTH kinds of prior at once -- two unverified repeats of the same guess (should

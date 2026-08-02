@@ -22,7 +22,11 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass, field
+from typing import Callable
+
+from .tools.schemas import NamespaceWorkloadStatus
 
 # Verbs that may change cluster state — the ONLY ones the gate will ever execute.
 _ALLOWED_MUTATING: set[tuple[str, ...]] = {
@@ -146,6 +150,89 @@ def validate_remediation(command: str) -> GateDecision:
     if not mutating:
         return GateDecision(False, "no allowed mutating action found in the command")
     return GateDecision(True, "ok", mutating=mutating, readonly=readonly)
+
+
+@dataclass
+class VerificationResult:
+    """Outcome of polling for recovery after an applied fix — see
+    docs/verification-plan.md. `status` is one of "confirmed_healthy" /
+    "still_unhealthy" / "not_checked"; never a boolean, so a fix that demonstrably
+    didn't work is a distinct, loud outcome rather than silence."""
+
+    status: str
+    detail: str
+
+
+def is_workload_healthy(status: NamespaceWorkloadStatus, workload: str) -> bool | None:
+    """True/False if `workload`'s Deployment was found and its replica counts say
+    healthy or not (ready == desired and unavailable == 0 — the same signal a human
+    reads off `kubectl get deploy`). None if the workload isn't in this namespace at
+    all: never guess when we can't check."""
+    dep = next((d for d in status.deployments if d.name == workload), None)
+    if dep is None:
+        return None
+    return dep.ready == dep.desired and dep.unavailable == 0
+
+
+def verify_recovery(
+    workload: str | None,
+    check_fn: Callable[[], NamespaceWorkloadStatus],
+    *,
+    timeout_s: int = 90,
+    poll_interval_s: int = 5,
+    stability_checks: int = 3,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    clock_fn: Callable[[], float] = time.monotonic,
+) -> VerificationResult:
+    """Poll `check_fn` (a get_workload_status call) until `workload` has been healthy
+    for `stability_checks` CONSECUTIVE polls, or `timeout_s` elapses.
+
+    Point-in-time only — "confirmed_healthy" means stable for the window actually
+    checked, never a permanent guarantee (docs/verification-plan.md decision 3). A pod
+    can pass one check and crash again seconds later, so a single healthy reading is
+    never enough: any unhealthy reading during the window resets the consecutive-
+    success counter to zero rather than merely pausing it, mirroring how Kubernetes'
+    own probes use successThreshold instead of trusting one success.
+
+    `sleep_fn`/`clock_fn` are injectable so tests can drive this without sleeping for
+    real or mocking global time.
+    """
+    if workload is None:
+        return VerificationResult("not_checked", "no workload named — nothing to verify")
+
+    consecutive = 0
+    attempts = 0
+    last_healthy: bool | None = None
+    start = clock_fn()
+    while True:
+        attempts += 1
+        status = check_fn()
+        healthy = is_workload_healthy(status, workload)
+        if healthy is None:
+            return VerificationResult(
+                "not_checked", f"{workload}: not found in namespace {status.namespace}"
+            )
+        last_healthy = healthy
+        if healthy:
+            consecutive += 1
+            if consecutive >= stability_checks:
+                elapsed = clock_fn() - start
+                return VerificationResult(
+                    "confirmed_healthy",
+                    f"{workload}: healthy for {consecutive} consecutive checks "
+                    f"(~{elapsed:.0f}s)",
+                )
+        else:
+            consecutive = 0  # a single bad reading resets the stability window
+
+        if clock_fn() - start >= timeout_s:
+            state = "healthy" if last_healthy else "unhealthy"
+            return VerificationResult(
+                "still_unhealthy",
+                f"{workload}: still {state} after {timeout_s}s ({attempts} checks, "
+                f"needed {stability_checks} consecutive)",
+            )
+        sleep_fn(poll_interval_s)
 
 
 def run_kubectl(args: list[str], dry_run: bool = False, timeout: int = 30) -> tuple[int, str, str]:

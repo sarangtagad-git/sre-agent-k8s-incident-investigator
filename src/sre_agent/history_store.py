@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS runs (
     hypotheses_json TEXT,
     report_json TEXT,
     eval_checks_json TEXT,
-    prior_incidents_json TEXT
+    prior_incidents_json TEXT,
+    verification_status TEXT,
+    verification_detail TEXT
 )
 """
 
@@ -75,6 +77,16 @@ def _connect() -> sqlite3.Connection:
         conn.execute("ALTER TABLE runs ADD COLUMN prior_incidents_json TEXT")
     except sqlite3.OperationalError:
         pass  # column already exists
+    # Phase 11 migration: pre-existing DBs lack verification_status/detail. NULL for
+    # every row that predates this phase — an honest "we don't know", not a guess.
+    try:
+        conn.execute("ALTER TABLE runs ADD COLUMN verification_status TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE runs ADD COLUMN verification_detail TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     return conn
 
 
@@ -90,6 +102,8 @@ def save_run(
     resolved: bool | None = None,
     eval_checks: "list[Check] | None" = None,
     triggered_by: str = "manual",  # "manual" | "alert" (Phase 9 listener)
+    verification_status: str | None = None,  # Phase 11: confirmed_healthy / still_unhealthy / not_checked
+    verification_detail: str | None = None,
 ) -> str:
     """Persist one investigate()/eval run. Returns the new run id."""
     run_id = uuid.uuid4().hex[:12]
@@ -104,8 +118,8 @@ def save_run(
                 input_tokens, cache_write_tokens, cache_read_tokens, output_tokens,
                 approval_status, resolved, triggered_by, evidence_json,
                 correlation_json, hypotheses_json, report_json, eval_checks_json,
-                prior_incidents_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                prior_incidents_json, verification_status, verification_detail
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 run_id,
@@ -133,6 +147,8 @@ def save_run(
                 report.model_dump_json(),
                 json.dumps([dataclasses.asdict(c) for c in eval_checks]) if eval_checks else None,
                 json.dumps([p.model_dump() for p in result.prior_incidents]),
+                verification_status,
+                verification_detail,
             ),
         )
         conn.commit()

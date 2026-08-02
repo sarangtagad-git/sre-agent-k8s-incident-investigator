@@ -88,8 +88,14 @@ def test_save_run_records_prior_incidents(db_path):
 
 
 def test_migration_adds_prior_incidents_json_to_old_db(db_path):
-    old_schema = history_store._SCHEMA.replace("    prior_incidents_json TEXT\n", "").replace(
-        ",\n)", "\n)"  # drop the now-trailing comma after eval_checks_json
+    # A pre-Phase-10 DB predates Phase 11 too — strip all three later columns to
+    # accurately simulate it, then fix the now-trailing comma after eval_checks_json.
+    old_schema = (
+        history_store._SCHEMA
+        .replace("    prior_incidents_json TEXT,\n", "")
+        .replace("    verification_status TEXT,\n", "")
+        .replace("    verification_detail TEXT\n", "")
+        .replace(",\n)", "\n)")
     )
     assert "prior_incidents_json" not in old_schema
     conn = sqlite3.connect(db_path)
@@ -100,6 +106,51 @@ def test_migration_adds_prior_incidents_json_to_old_db(db_path):
     run_id = history_store.save_run(_result(), namespace="boutique", workload=None,
                                     alert="x", mode="propose")
     assert history_store.get_run(run_id)["prior_incidents_json"] == "[]"
+
+
+def test_save_run_records_verification_status_and_detail(db_path):
+    run_id = history_store.save_run(
+        _result(), namespace="boutique", workload="emailservice", alert="x",
+        mode="execute", approval_status="approved_applied",
+        verification_status="confirmed_healthy",
+        verification_detail="emailservice: healthy for 3 consecutive checks (~15s)",
+    )
+    row = history_store.get_run(run_id)
+    assert row["verification_status"] == "confirmed_healthy"
+    assert "3 consecutive checks" in row["verification_detail"]
+
+
+def test_verification_status_defaults_to_none_when_not_passed(db_path):
+    run_id = history_store.save_run(_result(), namespace="boutique", workload=None,
+                                    alert="x", mode="propose")
+    row = history_store.get_run(run_id)
+    assert row["verification_status"] is None
+    assert row["verification_detail"] is None
+
+
+def test_migration_adds_verification_columns_to_old_db(db_path):
+    # Simulate a pre-Phase-11 DB: same table minus both new columns.
+    old_schema = (
+        history_store._SCHEMA
+        .replace("    verification_status TEXT,\n", "")
+        .replace("    verification_detail TEXT\n", "")
+        .replace(",\n)", "\n)")  # drop the now-trailing comma after prior_incidents_json
+    )
+    assert "verification_status" not in old_schema
+    assert "verification_detail" not in old_schema
+    conn = sqlite3.connect(db_path)
+    conn.execute(old_schema)
+    conn.commit()
+    conn.close()
+
+    run_id = history_store.save_run(
+        _result(), namespace="boutique", workload="emailservice", alert="x",
+        mode="execute", verification_status="still_unhealthy",
+        verification_detail="emailservice: still unhealthy after 90s",
+    )
+    row = history_store.get_run(run_id)
+    assert row["verification_status"] == "still_unhealthy"
+    assert row["verification_detail"] == "emailservice: still unhealthy after 90s"
 
 
 class TestFindRelatedRuns:
