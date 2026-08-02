@@ -433,6 +433,12 @@ def history(
     console.print(f"\n[bold]Approval status:[/] {row['approval_status']}")
     if "triggered_by" in row.keys():
         console.print(f"[bold]Triggered by:[/] {row['triggered_by']}")
+    if row["verification_status"] == "confirmed_healthy":
+        console.print(f"[bold]Verification:[/] [green]confirmed healthy[/] — {row['verification_detail']}")
+    elif row["verification_status"] == "still_unhealthy":
+        console.print(f"[bold]Verification:[/] [red]still unhealthy[/] — {row['verification_detail']}")
+    elif row["verification_status"] == "not_checked":
+        console.print(f"[bold]Verification:[/] [yellow]not checked[/] — {row['verification_detail']}")
     if row["resolved"] is not None:
         console.print(f"[bold]Resolved:[/] {'yes' if row['resolved'] else 'no'}")
 

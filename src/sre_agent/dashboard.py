@@ -316,7 +316,9 @@ def _status_pill(row: sqlite3.Row) -> tuple[str, str]:
 
 
 def _remediation_status(row: sqlite3.Row) -> tuple[str, str, str]:
-    """(badge css class, label, explanation) for who (if anyone) applied the fix.
+    """(badge css class, label, explanation) for who (if anyone) applied the fix,
+    and — Phase 11 — whether it was actually verified to have worked. "Applied" and
+    "worked" are different facts; the badge must say which one it's reporting.
 
     The agent never applies autonomously — it proposes; a human approves and applies
     with their own kubectl identity (Phase 5). Eval runs auto-stage/revert.
@@ -333,9 +335,27 @@ def _remediation_status(row: sqlite3.Row) -> tuple[str, str, str]:
             "safety gate, then auto-reverted the cluster.",
         )
     # execute
+    if row["approval_status"] == "approved_applied":
+        v = row["verification_status"]
+        if v == "confirmed_healthy":
+            return (
+                "good", "Applied & verified healthy",
+                f"{row['verification_detail']} — a bounded check taken right after "
+                "applying, not a permanent guarantee.",
+            )
+        if v == "still_unhealthy":
+            return (
+                "bad", "Applied — verification FAILED",
+                f"{row['verification_detail']} — the fix was applied but did not "
+                "resolve the issue.",
+            )
+        # not_checked, or a pre-Phase-11 row with no verification_status at all
+        return (
+            "warn", "Applied (not verified)",
+            "A human approved and it was applied, but not independently verified "
+            "whether it resolved the issue.",
+        )
     return {
-        "approved_applied": ("good", "Applied after human approval",
-                             "A human reviewed the dry-run and approved; applied with the operator's own kubectl identity."),
         "rejected": ("warn", "Rejected by human", "A human reviewed the proposal and declined to apply it."),
         "blocked": ("bad", "Blocked by safety gate", "The command failed the allowlist validator before any dry-run."),
         "dry_run_failed": ("bad", "Dry-run failed", "The server-side dry-run rejected the command; nothing was applied."),
