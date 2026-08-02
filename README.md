@@ -11,7 +11,10 @@ against it and scores the RCA before any of this is trusted.
 
 **Proven end to end:** break the cluster with one kubectl command and touch nothing
 else — 4½ minutes later a diagnosed incident (correct root cause, gated fix, $0.15)
-appears on the dashboard wearing an "auto" badge.
+appears on the dashboard wearing an "auto" badge. The agent also **remembers** — it
+recalls this workload's own prior incidents before writing up a new one — and **checks
+its own work** — an applied fix isn't marked resolved until the workload is polled
+healthy for several consecutive checks, not just until `kubectl apply` exits 0.
 
 > Learn-in-public project — built and hardened in public, including the parts that
 > didn't work the first time. Full design brief: [`k8s-incident-investigator-brief.md`](k8s-incident-investigator-brief.md).
@@ -39,6 +42,16 @@ appears on the dashboard wearing an "auto" badge.
   cost-per-investigation bars across all runs.
 - **Observe the observer** — OpenTelemetry spans are wired in from day one so tracing has
   somewhere to plug in as the project grows (not yet exported anywhere — see Known gaps).
+- **Memory that informs, never inflates** — the agent recalls this workload's own past
+  incidents, but the digest is text for the LLM to weigh, never a code-side confidence
+  bump; the cluster is always checked fresh *before* the past is allowed to influence
+  anything; and eval runs neither write to nor read from memory, so the regression suite
+  stays a cold, repeatable test.
+- **Trust, but verify the fix actually worked** — after a human-approved apply, the agent
+  polls the workload for several *consecutive* healthy checks (not just one, and not just
+  "the command exited 0") before calling it resolved. That verdict then feeds back into
+  memory honestly — a confirmed-healthy prior earns more trust, a confirmed-still-broken
+  prior actively tells the model not to repeat the same fix blind.
 
 ## Architecture
 
@@ -47,18 +60,24 @@ routes boutique alerts to a local webhook; each firing alert must pass the trigg
 policy (firing-only → namespace allowlist → cooldown → daily cap) before the agent
 spends a cent. Either way, the agent runs the same **LangGraph** state machine.
 `gather` drives a bounded **ReAct loop** — Claude picks a read-only tool, the tool runs,
-the result feeds back — until there's enough evidence. `correlate` lays out a timeline and
-(for cascades) a service dependency chain. `hypothesize` names competing root causes, each
-scored 0–1 with evidence for and against. `rank` is plain Python — sort by confidence, no
-LLM call. `propose` writes the final RCA on the top hypothesis with a single gated fix.
-Every node and tool call is an OpenTelemetry span.
+the result feeds back — until there's enough evidence, always against the live cluster,
+before memory ever enters the picture. `recall` then looks up this workload's own past
+non-eval incidents (plain Python, no LLM call) and hands `hypothesize`/`propose` a short
+digest — including an honest label if a past fix was later confirmed to have worked or
+failed. `correlate` lays out a timeline and (for cascades) a service dependency chain.
+`hypothesize` names competing root causes, each scored 0–1 with evidence for and against.
+`rank` is plain Python — sort by confidence, no LLM call. `propose` writes the final RCA
+on the top hypothesis with a single gated fix. That fix only ever reaches the cluster
+through the human approval gate — and once applied, the gate itself polls the workload
+for several consecutive healthy checks before the run is recorded as resolved. Every
+node and tool call is an OpenTelemetry span.
 
 ```
 Alertmanager ─▶ listener (trigger policy: allowlist · cooldown · daily cap)
-                    │                                                        propose only
-      CLI ──────────┴▶ gather (Claude ⇄ read-only tools) ─▶ correlate ─▶ hypothesize ─▶ rank ─▶ propose ─▶ human approval gate
-                            ▲ typed evidence                                                              (never auto-executes)
-                                                            every run ─▶ SQLite history ─▶ CLI + Streamlit dashboard
+                    │                                                                                    propose only
+      CLI ──────────┴▶ gather (Claude ⇄ read-only tools) ─▶ recall ─▶ correlate ─▶ hypothesize ─▶ rank ─▶ propose ─▶ human approval gate ─▶ verify (consecutive healthy checks)
+                            ▲ typed evidence                    ▲ this workload's                                  (never auto-executes)
+                                                                   own past incidents      every run ─▶ SQLite history ─▶ CLI + Streamlit dashboard
 ```
 
 Diagrams (in [`docs/architecture/`](docs/architecture/) — click to view):
@@ -86,6 +105,8 @@ Diagrams (in [`docs/architecture/`](docs/architecture/) — click to view):
 - [x] **7 · Run history** — every run persisted to SQLite (evidence trail, hypotheses, RCA, cost, outcome); `sre-agent history`
 - [x] **8 · Dashboard** — Streamlit incident feed + full-page investigation detail + an Analytics view (cache economics, tool usage, approval funnel)
 - [x] **9 · Alert-triggered investigations** — Alertmanager → webhook listener → guardrails → autonomous propose-only run; live-demoed end to end
+- [x] **10 · Incident memory** — a `recall` node feeds this workload's own past incidents into the RCA, text-only, cluster-checked-fresh-first, eval-isolated; two rounds of live calibration testing (over-trust, then under-use) hardened the prompt
+- [x] **11 · Applied-fix verification** — after a human-approved apply, poll for consecutive healthy checks before calling it resolved; the verdict feeds back into memory honestly
 - [ ] Demo video + this write-up finalized
 
 _Cross-cutting from day 1: OpenTelemetry spans on every node/tool call (not yet exported anywhere)._
@@ -97,9 +118,11 @@ infra/           k3d cluster · kube-prometheus-stack (+ boutique alert rules & 
 src/sre_agent/
   tools/         the 5 read-only evidence tools (+ Pydantic schemas)
   agent/         LangGraph graph, tool bridge, prompts, state/RCA schemas
-  remediation.py the Phase 5 allowlist validator + dry-run/apply gate
+  remediation.py the Phase 5 allowlist validator + dry-run/apply gate, plus the Phase 11
+                 consecutive-healthy-checks recovery verifier
   evals.py       the 3 scripted incidents (stage/revert/ground-truth) + scoring
-  history_store.py  SQLite persistence for every run (data/history.db, git-ignored)
+  history_store.py  SQLite persistence for every run (data/history.db, git-ignored),
+                 including recalled prior incidents and verification outcomes
   dashboard.py   the Streamlit dashboard (incident feed · detail pages · analytics)
   alerts.py      Alertmanager payload models + the pure trigger policy (Phase 9)
   listener.py    the webhook listener behind `sre-agent listen`
@@ -189,7 +212,7 @@ called the listener, the guardrails passed, and by 20:07:12 the agent had filed 
 incident (workload, 0.85, $0.15, `ModuleNotFoundError` correctly pulled from the crashed
 container's `--previous` logs). No human ran anything.
 
-## Keeping it honest and keeping it cheap: three things that broke first
+## Keeping it honest and keeping it cheap: five things that broke first
 
 **The eval harness catching its own bug.** The first live run of the `cascade` scenario
 scored the RCA `scheduling` instead of `dependency` — the model reasoned "desired replicas
@@ -226,6 +249,41 @@ this k3d cluster never injects `host.k3d.internal` — pods reach the host via
 `host.docker.internal` through Docker Desktop's DNS, which the plan only caught because
 "reachability" was flagged as the riskiest assumption and tested before anything else.
 
+**Memory that talked itself into false confidence — twice, in opposite directions.**
+Once `recall` shipped, the obvious risk test was to stage one incident and re-investigate
+it repeatedly without reverting — a persisting-issue scenario, and the one most likely to
+create an echo chamber. Confidence didn't run away (it plateaued around 0.85–0.92, then
+dropped), but the RCA's own *narrative* did drift: by the fifth repeat, near-identical
+priors from the same staged fault, re-run an hour apart, were being described as
+"multiple independent confirmations." True count, false framing — three sightings of one
+event aren't three corroborating incidents. Fixed by telling the model explicitly that
+closely-timed, near-identical priors are one event observed repeatedly, not independent
+evidence; re-verified live, the false-corroboration language disappeared entirely and the
+confidence band dropped from high (0.85–0.92) to medium (0.72–0.78) on the same repeated
+incident. That fix then over-corrected: a second test — stage an incident, apply the
+agent's own fix for real through the full approval gate, then re-stage the *same* fault —
+found the RCA no longer cited the prior at all, even though it was now a
+human-confirmed, validated outcome and not a repeated guess. Fixed by carving out
+confirmed outcomes as categorically different from repetition; re-verified, the new RCA
+cited only the confirmed entry, with the other unverified priors correctly still ignored.
+**The lesson generalizes:** a confidence-calibration fix needs to be tested in both
+directions — does it stop over-trusting repetition, *and* does it still make use of
+memory that's actually earned trust — because a fix that only proves one side can quietly
+break the other.
+
+**Trusting a fix that was never checked.** `approved_applied` meant only that
+`kubectl apply` returned exit 0 — nothing downstream ever confirmed the workload actually
+recovered, which stopped being a theoretical gap the moment memory started treating that
+label as reinforcing evidence. Fixed with a stability-window poller
+(`verify_recovery()`) that requires several *consecutive* healthy reads before a run is
+marked resolved — a single early design would have been fooled by a pod that passes one
+check and then crashes again, so it mirrors Kubernetes' own `successThreshold` instead of
+stopping at the first good reading. Live-verified on both paths: a genuinely fixed
+workload was correctly marked `confirmed_healthy`, and a synthetic "known to have failed"
+prior fed back into a fresh investigation dropped confidence to 0.55 — the lowest of any
+run all session — while the model explicitly cited the prior failure by revision number
+and still proposed the right class of fix, just without unearned certainty.
+
 ## Known gaps
 - OpenTelemetry spans are wired into every node and tool call, but no exporter is
   configured yet (`setup_tracing()` in `observability.py` is never invoked) — there's no
@@ -235,3 +293,10 @@ this k3d cluster never injects `host.k3d.internal` — pods reach the host via
 - The listener is a foreground lab tool by design — no daemon/systemd, no HA, and the
   dashboard is local-only (it reads the same local SQLite file the CLI writes).
 - The dashboard shows finished runs; an in-progress investigation isn't streamed live yet.
+- Memory's match key is exact namespace + workload only — an alert that carries a pod
+  label but no deployment label (some Prometheus alerts do) leaves `workload=None` and
+  can never be recalled. A known narrowness, not yet broadened.
+- Verification only polls the workload named in the remediation, not downstream/dependent
+  services in the correlation chain; it's a synchronous one-shot check at apply time, not
+  a background re-check job; and pre-Phase-11 `approved_applied` rows were never
+  backfilled with a verification verdict.
