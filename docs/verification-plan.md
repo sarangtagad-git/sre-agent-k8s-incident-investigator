@@ -93,19 +93,40 @@ against. Recording a guess here (e.g. "check the whole namespace looks fine") wo
 exactly the kind of unearned confidence this fix exists to remove. Result:
 `verification_status = "not_checked"`, with a clear reason in `verification_detail`.
 
-### 3. Bounded synchronous poll, not a background job
+### 3. Bounded synchronous poll, not a background job — and a STABILITY WINDOW, not a
+single snapshot
 
 Verification happens inline, right after `_approval_gate()` returns
 `"approved_applied"` and before `investigate()` returns — poll `get_workload_status`
-every `verify_poll_interval_s` (default 5s) up to `verify_timeout_s` (default 90s),
-stop early the moment the workload reports healthy. This fits the existing synchronous
-CLI flow (which already blocks for dry-run + human confirmation) without new
-scheduling infrastructure. The cost is real: up to 90 extra seconds on an `-x` run.
-That's a deliberate, disclosed tradeoff — print `"Verifying recovery… (up to 90s)"` so
-it never looks like a hang. New `Settings` fields make all three numbers
-(`verify_after_apply: bool = True`, `verify_timeout_s: int = 90`,
-`verify_poll_interval_s: int = 5`) overridable, including turning verification off
-entirely if a user wants the old fire-and-forget behavior back.
+every `verify_poll_interval_s` (default 5s) up to `verify_timeout_s` (default 90s).
+
+**Revised after review: do not stop at the first healthy reading.** A pod can pass a
+single check and then genuinely fail again seconds later — a slow memory leak, a
+probe that passes once and then starts failing, a dependency that's flaky rather than
+fully down. Kubernetes' own probes don't trust one success either (`successThreshold`
+exists for exactly this reason), and this check shouldn't either. Require
+`verify_stability_checks` (default 3) **consecutive** healthy polls — i.e. the
+workload must stay healthy across at least `verify_stability_checks *
+verify_poll_interval_s` (≈15s by default) before declaring `"confirmed_healthy"`. Any
+unhealthy reading during that window resets the consecutive-success counter to zero,
+not just to "still checking."
+
+This fits the existing synchronous CLI flow (which already blocks for dry-run + human
+confirmation) without new scheduling infrastructure. The cost is real: up to 90 extra
+seconds on an `-x` run. That's a deliberate, disclosed tradeoff — print
+`"Verifying recovery… (up to 90s)"` so it never looks like a hang. New `Settings`
+fields make these numbers (`verify_after_apply: bool = True`, `verify_timeout_s: int =
+90`, `verify_poll_interval_s: int = 5`, `verify_stability_checks: int = 3`)
+overridable, including turning verification off entirely if a user wants the old
+fire-and-forget behavior back.
+
+**Equally important: what this does NOT prove.** Even with a stability window,
+verification is a point-in-time observation, not a permanent guarantee — a node
+eviction an hour later is a different failure with nothing to do with whether this fix
+worked. The outcome label (decision 6) must say so explicitly rather than imply
+certainty it doesn't have: *"verified healthy immediately after applying"*, not
+*"confirmed to have resolved the issue"* — the second phrasing reads as more
+permanent than any bounded check can honestly claim.
 
 Verification uses the agent's own **read-only** kubeconfig/tool machinery (the same
 `get_workload_status()` call already used during investigation), not the operator's
@@ -148,8 +169,8 @@ doesn't shift the dashboard's "Eval pass rate" tile, which already filters to
 
 | approval_status | verification_status | outcome_label |
 |---|---|---|
-| `approved_applied` | `confirmed_healthy` | "applied and approved by a human, and confirmed to have resolved the issue" |
-| `approved_applied` | `still_unhealthy` | "applied and approved by a human, but verification found the issue did NOT resolve" |
+| `approved_applied` | `confirmed_healthy` | "applied and approved by a human, verified healthy immediately after applying" — deliberately NOT "confirmed to have resolved the issue" (permanent-sounding); see decision 3's stability-window note on what a bounded check can and can't promise |
+| `approved_applied` | `still_unhealthy` | "applied and approved by a human, but verification found the issue did NOT resolve — do not propose this same fix again without new evidence" |
 | `approved_applied` | `not_checked` / `NULL` | "applied and approved by a human (not independently verified whether it resolved the issue)" |
 | `rejected` / `blocked` / `dry_run_failed` / `apply_failed` | — | unchanged from today |
 | (propose mode) | — | unchanged: "proposed only — outcome unknown, never applied" |
@@ -158,22 +179,65 @@ The `still_unhealthy` row is the new, important one — it turns "a human approv
 from an unconditionally positive signal into what it should have been all along: a
 fact whose *polarity* depends on what was actually observed afterward.
 
-### 7. `render_memory_digest()`'s instruction needs a revision pass, not just new data
+### 7. `render_memory_digest()`'s instruction needs a revision pass — and it must
+DIRECT behavior for a failed fix, not just describe it
 
 The current carve-out language (Phase 10, second fix) says an "applied and approved by
 a human" entry is *always* "a confirmed real-world outcome." That's no longer quite
 right once there are three shades of "applied." The instruction needs to distinguish:
 - an entry confirmed to have worked → cite it, let it strengthen the remediation and
-  (if the cause matches) confidence — exactly like today's carve-out.
+  (if the cause matches) confidence — exactly like today's carve-out, with the
+  point-in-time honesty from decision 3 folded in.
 - an entry applied-but-unverified → weaker than a confirmed one, still worth citing as
   "a human already tried this," but not with the same certainty.
-- an entry confirmed to have **failed** → explicitly flag it as a reason to be
-  *more* cautious about proposing the same fix again, not neutral information.
+- an entry confirmed to have **failed** → this is the case a review of this plan
+  caught as under-specified. A label alone is not a guarantee the model won't just
+  propose the identical command again — that has to be a direct instruction, not
+  descriptive flavor text. The digest must explicitly say: **if today's evidence
+  points to the same root cause as an entry whose outcome was `still_unhealthy`, do
+  not propose that same fix again without explaining why this time is different.**
+  Either propose a genuinely different remediation, or say plainly in the rationale
+  that the obvious fix was already tried and failed, and flag that deeper
+  investigation (or human escalation) is warranted rather than repeating it — and let
+  that push confidence in the OLD hypothesis down, not up.
 
 Exact wording is an implementation-time decision (follow the same sentence-boundary
 formatting convention as the rest of `prompts.py` — see the `\n`-per-sentence style
-already used throughout), but the three-way distinction above must survive into the
+already used throughout), but the three-way distinction — and specifically the
+DIRECTIVE (not just descriptive) language for the failed case — must survive into the
 prompt text, or this phase only fixes the data and not the behavior it's meant to fix.
+This needs its own unit test in `tests/test_memory.py`, mirroring
+`test_mixed_digest_keeps_both_instructions_and_labels_entries_correctly`: build a
+digest containing a `still_unhealthy` entry and assert the "do not propose this fix
+again" instruction is present in the rendered text.
+
+## Failure containment — why a failed fix can't spiral into a retry storm
+
+This plan doesn't add any new autonomy, so the failure modes that would make a
+verification failure dangerous (the agent repeatedly re-applying a broken fix, or
+alert-triggered runs firing in a tight loop) are already structurally prevented by
+mechanisms built in earlier phases — worth stating explicitly, since it's easy to read
+"the agent detects its fix failed" and worry it implies some kind of automatic retry:
+
+- **No auto-retry exists, full stop.** Every `execute` run — success or failure —
+  requires a fresh `typer.confirm()` from a human. A `still_unhealthy` result ends the
+  current `investigate()` call; nothing loops back and tries again automatically.
+- **Alert-triggered re-investigation is already throttled independently of this
+  phase.** Phase 9's per-`(namespace, alertname)` 30-minute cooldown and daily run cap
+  (`alerts.py`) govern how soon the listener can investigate the same alert again,
+  regardless of whether the previous attempt's fix worked. A still-firing alert after
+  a failed fix will eventually trigger a fresh investigation once the cooldown
+  expires — not sooner, and not in a loop.
+- **When that fresh investigation happens, decision 7's directive language is what
+  prevents it from being a blind repeat** of the same failed action — this is the
+  actual point of recording `still_unhealthy` at all, not just an audit trail.
+- **The human stays in the loop for the outcome, too.** `_approval_gate()`'s console
+  output should not print the current unconditional `"✓ Applied."` when verification
+  is still running or comes back negative — see the open question below, now resolved:
+  print `"✓ Applied, verifying recovery…"` first, then either `"✓ Recovery confirmed."`
+  or a clearly-marked `"⚠ Applied, but recovery was NOT confirmed — investigate
+  again."` This closes the loop for the human operator, not just for the agent's own
+  memory.
 
 ## Components
 
@@ -202,28 +266,39 @@ prompt text, or this phase only fixes the data and not the behavior it's meant t
 1. `_is_workload_healthy()` in `remediation.py` + unit tests (synthetic
    `DeploymentStatus` combinations: ready==desired/unavailable==0 → True; ready<desired
    → False; unavailable>0 → False; workload name not found → None). Pure, free.
-2. `history_store` columns + migration + `save_run()` params + tests (mirroring the
+2. The poll/stability-window state machine as its own pure, injectable-clock function
+   (e.g. takes a `check_fn` + `sleep_fn` so tests don't need to sleep for real) +
+   tests covering: healthy immediately and stays healthy → `confirmed_healthy` after
+   `verify_stability_checks` calls, not 1; healthy once then unhealthy again before
+   the window completes → counter resets, does NOT short-circuit to
+   `confirmed_healthy` (this is the direct regression test for the flapping scenario
+   this plan was revised for); never healthy → `still_unhealthy` after the timeout.
+   Pure, free.
+3. `history_store` columns + migration + `save_run()` params + tests (mirroring the
    existing `triggered_by`/`prior_incidents_json` test patterns). Pure, free.
-3. Wire the poll-and-check step into `cli.py`'s execute branch; update the `resolved`
-   computation. Print the "verifying recovery…" progress message.
-4. Extend `_OUTCOME_LABELS` in `graph.py` for the four-row taxonomy; update
-   `render_memory_digest()`'s instruction text for the third tier.
-5. **Free verification of the negative path — don't wait for the model to produce a
+4. Wire the poll-and-check step into `cli.py`'s execute branch; update the `resolved`
+   computation; replace the unconditional "✓ Applied." with the three outcome-specific
+   messages from "Failure containment" above.
+5. Extend `_OUTCOME_LABELS` in `graph.py` for the four-row taxonomy (point-in-time
+   wording per decision 3); update `render_memory_digest()`'s instruction text for the
+   third tier, including the directive "don't repeat a failed fix" language (decision
+   7) + its unit test.
+6. **Free verification of the negative path — don't wait for the model to produce a
    bad fix live (unpredictable, wasteful).** Stage a real incident, then call the new
    poll-and-check function directly against the still-broken workload (bypassing
    propose/apply entirely) to confirm it correctly reports `"still_unhealthy"` after
    timing out. This proves the negative path deterministically and for free.
-6. **One live end-to-end verification of the positive path**: `investigate -x`
+7. **One live end-to-end verification of the positive path**: `investigate -x`
    (auto-approved) on a real crash_loop incident, confirm `verification_status`
-   ends up `"confirmed_healthy"`, `resolved` is `True`, and the elapsed time reflects
-   the poll (a few extra seconds beyond a normal investigation, not the full 90s
-   timeout, since recovery should be fast for this incident class). Budget: ~$0.15,
-   same as any other single investigation.
-7. **Confirm the memory digest actually changes** for a fresh investigation that
-   recalls this newly-verified row — check the RCA text reflects the stronger
-   "confirmed to have resolved" framing rather than the older, flatter "applied and
-   approved by a human" wording. One more live run, ~$0.15.
-8. Re-run the full test suite; confirm the dashboard's "Eval pass rate" tile is
+   ends up `"confirmed_healthy"` only after multiple consecutive healthy polls (check
+   the actual poll count/timing in the console output, not just the final result),
+   `resolved` is `True`. Budget: ~$0.15, same as any other single investigation.
+8. **Confirm the memory digest actually changes and actively steers** for a fresh
+   investigation that recalls this newly-verified row — check the RCA text reflects
+   the point-in-time-honest framing (not "permanently confirmed"), and separately, do
+   the same check against a `still_unhealthy` prior to confirm the model doesn't
+   simply re-propose the identical failed command. Two more live runs, ~$0.15 each.
+9. Re-run the full test suite; confirm the dashboard's "Eval pass rate" tile is
    unaffected (decision 5) and the Analytics "approval funnel" continues to render
    correctly with the new column present but unused there for now (surfacing
    verification status in the funnel UI is optional polish, not required for this
@@ -248,13 +323,14 @@ prompt text, or this phase only fixes the data and not the behavior it's meant t
 
 ## Open questions — defaults chosen, confirm before/while building
 
-- **90s timeout, 5s poll interval.** Reasonable given every rollout observed live this
-  session stabilized well within that window; revisit if a real incident class turns
-  out to need longer (e.g. a slow-starting workload with a long readiness probe).
-- **Should a `still_unhealthy` verification result change anything about the CLI's own
-  console output at the time** (e.g. print a red warning instead of the current
-  unconditional "✓ Applied")? Not decided — leans yes, since printing "✓ Applied" when
-  verification then immediately fails would itself be a small honesty gap of the same
-  shape as the one this phase fixes.
+- **90s timeout, 5s poll interval, 3 consecutive stability checks.** Reasonable given
+  every rollout observed live this session stabilized well within that window;
+  revisit if a real incident class turns out to need longer (e.g. a slow-starting
+  workload with a long readiness probe) or a flappier one needs more than 3 checks to
+  trust.
+- ~~Should a `still_unhealthy` result change the CLI's console output~~ — **resolved**,
+  see "Failure containment" above: yes, replace the unconditional "✓ Applied." with an
+  outcome-specific message.
 - **Exact wording of the three-tier memory instruction** (decision 7) — left to
-  implementation time; the shape of the distinction is fixed, the sentences aren't.
+  implementation time; the shape of the distinction — including the directive
+  "don't repeat a fix already marked failed" language — is fixed, the sentences aren't.
