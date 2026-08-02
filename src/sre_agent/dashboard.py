@@ -311,8 +311,8 @@ def _status_pill(row: sqlite3.Row) -> tuple[str, str]:
     if mode == "execute":
         if row["approval_status"] == "approved_applied":
             return {
-                "confirmed_healthy": ("good", "verified healthy"),
-                "still_unhealthy": ("bad", "verified unhealthy"),
+                "confirmed_healthy": ("good", "applied and verified healthy"),
+                "still_unhealthy": ("bad", "applied and verified unhealthy"),
             }.get(row["verification_status"], ("warn", "applied"))
         return {
             "rejected": ("warn", "rejected"),
