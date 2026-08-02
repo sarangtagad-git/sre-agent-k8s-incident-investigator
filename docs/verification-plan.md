@@ -1,8 +1,9 @@
 # Phase 11: applied-fix verification — build plan
 
-**Status: scoped, not yet implemented.** Written so a fresh session (no prior
-conversation context) can pick this up and build it directly. Read this file top to
-bottom before writing any code.
+**Status: implemented and live-verified (2026-08-02).** All 9 steps in "Order of work"
+are done — see "Live verification results" below for what was actually observed.
+Originally written so a fresh session could pick this up and build it directly; now
+serves as the record of what was decided and why.
 
 ## What this is
 
@@ -303,6 +304,68 @@ mechanisms built in earlier phases — worth stating explicitly, since it's easy
    correctly with the new column present but unused there for now (surfacing
    verification status in the funnel UI is optional polish, not required for this
    phase — see below).
+
+## Live verification results (2026-08-02) — all three checks passed, one better than
+expected
+
+**Step 6, negative path (free, no LLM):** staged crash_loop, called `verify_recovery()`
+directly against the still-broken workload. Result: `status: still_unhealthy`, `detail:
+"emailservice: still unhealthy after 20s (6 checks, needed 3 consecutive)"`. Confirmed
+deterministically before spending anything on the positive path.
+
+**Step 7, positive path — `investigate -x` (auto-approved) on a real crash_loop
+incident.** Console showed the full new flow: `"✓ Apply command succeeded."` →
+`"Verifying recovery… (up to 90s, needs 3 consecutive healthy checks)"` →
+`"✓ Recovery confirmed. emailservice: healthy for 3 consecutive checks (~10s)"`. The
+~10s figure is exactly right: 3 checks at the default 5s poll interval land at t=0, t=5,
+t=10. DB row confirmed `verification_status="confirmed_healthy"`,
+`verification_detail` matches the console line, `resolved=1` — the whole chain from
+poll to persisted row is correct.
+
+**Step 8, digest steering — stronger evidence than planned.** Rather than only testing
+a synthetic `still_unhealthy` entry in isolation, the *real* run 7 already recalled an
+older pre-Phase-11 `approved_applied` row (verification_status NULL) for the same
+ReplicaSet — and the model correctly used the new `_APPROVED_UNVERIFIED` wording
+("not independently verified") as a hedge, then **independently inferred from fresh
+evidence** that the earlier "fix" hadn't held, since the identical fault had recurred.
+It said so explicitly in its own root-cause text: *"indicating either the rollback did
+not durably fix the root defect, was reverted, or whatever process manages this
+Deployment keeps reintroducing the broken pod template"* — exactly the kind of
+skepticism decision 3's "not a permanent guarantee" wording exists to invite, achieved
+without decision 7's directive language even being needed yet, because the label was
+honest enough on its own.
+
+Then the deliberate test: inserted one synthetic `still_unhealthy` row for the *exact*
+remediation command just applied (`kubectl rollout undo ... --to-revision=33`),
+re-staged the same fault, ran a fresh `investigate`. The digest correctly rendered all
+three outcome shades side by side — `still_unhealthy` ("do not propose this same fix
+again without new evidence"), `confirmed_healthy` ("verified healthy immediately after
+applying (a bounded check, not a permanent guarantee)"), and a plain `propose`-mode
+entry — and the resulting RCA:
+- **Explicitly cited the failure by revision number**: *"one rollback (rev34→33) was
+  applied and verified healthy immediately, but the broken template reappeared again
+  at rev36, indicating the rollback did not address the true source of
+  reintroduction."*
+- **Reframed the remediation as temporary, not a solution**: *"treat this as
+  temporary — the same broken template has reappeared after a prior approved
+  rollback... this fix alone is not durable — a human should also investigate and
+  lock down whatever mechanism... is reintroducing"* the broken command.
+- **Confidence dropped to 0.55** — the lowest of any emailservice investigation this
+  entire session (prior range: 0.70–0.92) — with the alternative "workload" hypothesis
+  rising to 0.35, explicitly reasoned as "since simply reverting revisions has
+  previously failed to hold." This is decision 7's "let a known failure LOWER
+  confidence in the old hypothesis" working exactly as specified, not just mentioned
+  in passing but materially changing the model's own stated certainty.
+
+It still proposed a rollback (the correct fix *class* — there was no other remediation
+to propose, since the fault genuinely is a bad rollout), which is the right call: the
+directive was never "never propose this again," it was "don't propose it with the same
+unearned confidence." That distinction held up exactly as designed.
+
+All runs reverted cleanly; cluster confirmed healthy after each. `data/history.db` now
+carries a real end-to-end trail: a genuine `confirmed_healthy` row, a genuine
+`still_unhealthy` row (synthetic input, real persistence), and a run that reasoned
+correctly over both plus an older unverified one, all in the same digest.
 
 ## Explicitly out of scope (this phase)
 
