@@ -46,6 +46,7 @@ from .schemas import (
     AgentState,
     Correlation,
     Hypotheses,
+    Hypothesis,
     IncidentContext,
     PriorIncident,
     RCAReport,
@@ -71,6 +72,44 @@ def _estimate_cost(totals: dict, model: str) -> float:
     return (
         totals["input"] + totals["cache_write"] * 1.25 + totals["cache_read"] * 0.10
     ) * price_in / 1e6 + totals["output"] * price_out / 1e6
+
+
+def _compact_schema(model_cls) -> str:
+    """A minimal field:type sketch of model_cls, instead of Pydantic's verbose
+    model_json_schema() dump (a "title" on every field, $defs/$ref indirection,
+    "type":"object" boilerplate). Same shape info for the model to match, far
+    fewer tokens — and this is prompt text, not `messages`, so it doesn't touch
+    the gather-transcript cache prefix (see analyze()/_analyze_call() above)."""
+    full = model_cls.model_json_schema()
+    defs = full.get("$defs", {})
+
+    def resolve(schema: dict):
+        if "$ref" in schema:
+            return resolve(defs[schema["$ref"].rsplit("/", 1)[-1]])
+        if "enum" in schema:
+            return schema["enum"]
+        if schema.get("type") == "array":
+            return [resolve(schema.get("items", {}))]
+        if "properties" in schema:
+            return {k: resolve(v) for k, v in schema["properties"].items()}
+        return schema.get("type", "any")
+
+    return json.dumps(resolve(full))
+
+
+def _hypotheses_for_report(ranked: list[Hypothesis]) -> str:
+    """Re-serialize the ranked hypotheses for propose's prompt tail. REPORT_INSTRUCTION
+    uses the full hypothesis (incl. `supporting`) only for the top one it writes up;
+    the rest are summarized as "cause (score): why rejected" — `against` is the "why
+    rejected", `supporting` for a REJECTED cause is never read. Dropping it there saves
+    real tokens without cutting anything the report actually cites."""
+    dumped = []
+    for i, h in enumerate(ranked):
+        d = h.model_dump()
+        if i > 0:
+            d.pop("supporting", None)
+        dumped.append(d)
+    return json.dumps(dumped)
 
 
 # Phase 10 (memory) — honest outcome labels for a recalled run. Never hides a bad
@@ -185,7 +224,7 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
 
     def analyze(messages, instruction, model_cls):
         """One structured-output analysis call over the gathered evidence (no new tools)."""
-        schema_hint = json.dumps(model_cls.model_json_schema())
+        schema_hint = _compact_schema(model_cls)
         ask = (
             f"{instruction}\n\nDo not call any tools. Respond with ONLY a single JSON "
             "object (no markdown fences, no prose before or after) matching this JSON "
@@ -323,7 +362,7 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
             analysis = "Your analysis so far:\n"
             if corr is not None:
                 analysis += "Correlation: " + corr.model_dump_json() + "\n"
-            analysis += "Ranked hypotheses (top first): " + Hypotheses(hypotheses=ranked).model_dump_json()
+            analysis += "Ranked hypotheses (top first): " + _hypotheses_for_report(ranked)
             digest = render_memory_digest(state["prior_incidents"])
             report = analyze(state["messages"], analysis + digest + "\n\n" + REPORT_INSTRUCTION, RCAReport)
 
