@@ -300,13 +300,21 @@ def _fmt_when(row: sqlite3.Row) -> tuple[str, str]:
 
 
 def _status_pill(row: sqlite3.Row) -> tuple[str, str]:
-    """(pill css class, pill text) — mirrors cli.py _status_label()."""
+    """(pill css class, pill text) — mirrors cli.py _status_label(). Phase 11: an
+    "applied" pill alone doesn't say whether the fix actually worked, so
+    approved_applied branches on verification_status the same way
+    _remediation_status() does — the feed card and detail header must tell the same
+    story as the remediation card, not a flatter one."""
     mode = row["mode"]
     if mode == "eval":
         return ("good", "pass") if row["resolved"] else ("bad", "fail")
     if mode == "execute":
+        if row["approval_status"] == "approved_applied":
+            return {
+                "confirmed_healthy": ("good", "verified healthy"),
+                "still_unhealthy": ("bad", "verified unhealthy"),
+            }.get(row["verification_status"], ("warn", "applied"))
         return {
-            "approved_applied": ("good", "applied"),
             "rejected": ("warn", "rejected"),
             "blocked": ("bad", "blocked"),
             "dry_run_failed": ("bad", "dry-run failed"),
