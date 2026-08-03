@@ -87,7 +87,11 @@ def _compact_schema(model_cls) -> str:
         if "$ref" in schema:
             return resolve(defs[schema["$ref"].rsplit("/", 1)[-1]])
         if "enum" in schema:
-            return schema["enum"]
+            # A bare list here reads as "this field IS a list" rather than "pick one
+            # of these" — live-verified: the model started emitting category as
+            # ["rollout"] instead of "rollout" once this was a raw list. A string
+            # placeholder keeps the field's type as a string in the sketch.
+            return "one of: " + "|".join(schema["enum"])
         if schema.get("type") == "array":
             return [resolve(schema.get("items", {}))]
         if "properties" in schema:
