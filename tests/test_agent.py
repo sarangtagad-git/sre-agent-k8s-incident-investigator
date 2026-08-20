@@ -21,6 +21,9 @@ def test_tool_schemas_wellformed():
         "get_pod_logs",
         "get_rollout_history",
         "query_prometheus",
+        "get_network_policies",
+        "get_service_status",
+        "get_node_status",
     }
     for t in ANTHROPIC_TOOLS:
         assert t["description"]

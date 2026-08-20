@@ -25,6 +25,14 @@ class ContainerState(BaseModel):
     # From the *previous* (crashed) instance — key for CrashLoopBackOff.
     last_reason: str | None = None
     last_exit_code: int | None = None
+    # What was actually asked for, straight from the pod spec — not a live usage number.
+    # A resource-starvation root cause (throttled CPU, silent OOM risk) is often visible
+    # here alone: a limit of "5m" CPU or "16Mi" memory is a smoking gun on its own,
+    # before ever needing a metrics backend.
+    cpu_limit: str | None = None
+    cpu_request: str | None = None
+    memory_limit: str | None = None
+    memory_request: str | None = None
 
 
 class PodStatus(BaseModel):
@@ -142,3 +150,61 @@ class PrometheusRangeResult(BaseModel):
     query: str
     series: list[MetricSeries] = Field(default_factory=list)
     error: str | None = None
+
+
+class NetworkPolicyRule(BaseModel):
+    """One ingress or egress rule within a NetworkPolicy, in human-readable form."""
+
+    direction: str  # "ingress" | "egress"
+    peers: list[str] = Field(default_factory=list)  # e.g. "pods where app=paymentservice"
+    ports: list[str] = Field(default_factory=list)  # e.g. "TCP/50051"
+
+
+class NetworkPolicyInfo(BaseModel):
+    """A NetworkPolicy — mirrors `kubectl describe networkpolicy`.
+
+    The smoking gun for traffic that's silently dropped between two healthy pods:
+    check whether a policy's pod_selector matches the destination and whether any
+    of its rules actually admit the source.
+
+    `created` matters for root-causing, not just describing: a policy that's been
+    stable for weeks is probably intentional (the caller's traffic pattern is what
+    changed — fix the app, don't touch the policy); a policy created minutes ago,
+    right as the incident started, is probably the change that broke things.
+    Compare it against the calling service's own rollout history to tell which.
+    """
+
+    name: str
+    namespace: str
+    pod_selector: str  # e.g. "app=paymentservice", or "<all pods>" if empty
+    policy_types: list[str] = Field(default_factory=list)  # ["Ingress"], ["Egress"], or both
+    rules: list[NetworkPolicyRule] = Field(default_factory=list)
+    created: datetime | None = None
+
+
+class ServiceStatus(BaseModel):
+    """A Service's routing health — mirrors `kubectl describe service`.
+
+    endpoint_count is the key signal: a Service whose selector matches zero pods
+    still looks perfectly healthy on its own (ClusterIP assigned, no errors) while
+    silently routing nowhere — the classic "wrong_service_selector" failure mode.
+    """
+
+    name: str
+    namespace: str
+    type: str  # ClusterIP | NodePort | LoadBalancer
+    selector: dict[str, str] = Field(default_factory=dict)
+    cluster_ip: str | None = None
+    ports: list[str] = Field(default_factory=list)  # e.g. "80->8080/TCP"
+    endpoint_count: int = 0  # ready + not-ready addresses actually backing this Service
+    ready_endpoint_count: int = 0
+
+
+class NodeStatus(BaseModel):
+    """A cluster node's health — mirrors `kubectl get nodes` / `describe node`."""
+
+    name: str
+    ready: bool
+    schedulable: bool  # False if cordoned (spec.unschedulable)
+    conditions: list[str] = Field(default_factory=list)  # e.g. "MemoryPressure=False"
+    kubelet_version: str | None = None

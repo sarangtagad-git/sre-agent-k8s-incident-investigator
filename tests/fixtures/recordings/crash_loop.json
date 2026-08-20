@@ -1,0 +1,216 @@
+{
+  "report": {
+    "summary": "emailservice deployment revision 51 contains a container image (tag v0.10.5) with broken Python application code that attempts to import a non-existent module 'nonexistent_sre_eval_module' on startup. The pods crash immediately with exit code 1 (ModuleNotFoundError), triggering CrashLoopBackOff with restart count climbing. Revision 50's pods remain Running despite prior resource-induced restarts, indicating the image tag v0.10.5 was re-pushed or rebuilt with defective code between the two revisions.",
+    "root_cause": "The container image (v0.10.5) deployed in revision 51 of the emailservice contains broken Python code that executes `import nonexistent_sre_eval_module` on startup, causing immediate application failure with ModuleNotFoundError and exit code 1.",
+    "category": "workload",
+    "confidence": "medium",
+    "confidence_score": 0.75,
+    "evidence": [
+      "Pod logs (emailservice-cd59fb8cf-zmt4z, revision 51): Traceback shows direct import failure: \"ModuleNotFoundError: No module named 'nonexistent_sre_eval_module'\" (get_pod_logs current=true)",
+      "Pod crash occurs immediately after container start (pod events: Created → Started → Unhealthy within 1-2 seconds), before health checks can pass",
+      "Exit code 1 indicates application-level failure, not infrastructure/OOM (contrast with revision 50 which exits code 137/SIGKILL)",
+      "Pod events: 'Container created' (count:4), 'Container started' (count:4) showing repeated crash-restart cycle across 4 attempts over ~90 seconds (2026-08-19T07:12:41Z–07:13:28Z)",
+      "Readiness probe timeout failures logged immediately: 'Liveness probe failed: timeout: failed to connect service 10.42.2.206:8080 within 1s' (cannot connect because app never starts)",
+      "The module name 'nonexistent_sre_eval_module' strongly suggests intentional/injected breakage or test code",
+      "Revision 51 ReplicaSet created 2026-08-03T06:19:19Z with same image tag v0.10.5 as revision 50 (created 2026-08-03T05:31:10Z), but pods from revision 51 crash while revision 50's pod is Running, indicating image content changed between revisions (re-push)"
+    ],
+    "alternatives": [
+      "Image tag v0.10.5 was re-pushed/overwritten after revision 50 was deployed, and the new image contains the broken code (rollout, score 0.70): revision 50 deployed working v0.10.5 on 2026-08-03T05:31:10Z and remains Ready; revision 51 referenced same tag but pod scheduled 2026-08-19T07:12:38Z (16 days later) encountered the re-built broken image. Revision 50 exits code 137 (OOM/resource), not code 1, ruling out same image content. Rollout undo would be the fix.",
+      "A configuration change (env var, ConfigMap, startup parameter) applied to revision 51 causes the application to import the non-existent module (config, score 0.50): No pod environment or config details visible; Python traceback shows direct static import, not parametric/conditional logic; pod events do not mention ConfigMap/Secret updates.",
+      "Pod scheduled on node with corrupted or outdated image cache, or missing Python runtime dependencies (node, score 0.30): Pod events show image 'already present on machine and can be accessed' (count:4 restarts); no image extraction or pull errors; error is Python module import (app code), not missing system library.",
+      "emailservice startup code contacts an unavailable dependency; the failure manifests as module import error in error handling code (dependency, score 0.15): Error is ModuleNotFoundError (not connection timeout); pod events show timeout to self (10.42.2.206:8080 health check), not external dependency; revision 50 also calls same dependencies and is Ready, ruling out dependency outage; module name does not suggest a real service.",
+      "Pod cannot be scheduled due to resource constraints or node affinity (scheduling, score 0.05): Pod phase is Running, not Pending; pod events show successful Scheduled, Pulled, Created, Started sequence with no scheduling failures; crash occurs after start."
+    ],
+    "impact": "emailservice is unavailable (pods not Ready). Deployment desired:1, ready:1 (from get_workload_status) but with unavailable:1, indicating the new revision is unhealthy. Revision 50's pod is still running, providing some availability but is carrying 45 restarts from prior resource issues. Any traffic routing to the new revision 51 pod fails immediately. User-facing checkout/email functionality is degraded or non-functional.",
+    "remediation": {
+      "action": "Rollback emailservice deployment to revision 50 (the last known stable revision) to restore the working image.",
+      "command": "kubectl rollout undo deployment/emailservice -n boutique --to-revision=50",
+      "rationale": "Revision 50 deployed the same image tag v0.10.5 and achieved Ready state with a running pod (emailservice-7cd44fdb6f-46g89). Revision 51 either re-pushed the image tag with broken code or was corrupted in transit. Rolling back to revision 50 will restore the previous working pod configuration and image, stopping the CrashLoopBackOff immediately. Revision 50's pod will continue running (it is already in Running state), and no new pods will be scheduled from the broken revision 51 spec.",
+      "reversible": true
+    }
+  },
+  "evidence": [
+    {
+      "tool": "get_workload_status",
+      "input": {
+        "namespace": "boutique"
+      },
+      "ok": true,
+      "summary": "13 pods, 12 deployments"
+    },
+    {
+      "tool": "get_pod_logs",
+      "input": {
+        "namespace": "boutique",
+        "name": "emailservice-cd59fb8cf-zmt4z",
+        "previous": true
+      },
+      "ok": true,
+      "summary": "1 log lines"
+    },
+    {
+      "tool": "get_pod_logs",
+      "input": {
+        "namespace": "boutique",
+        "name": "emailservice-cd59fb8cf-zmt4z"
+      },
+      "ok": true,
+      "summary": "1 log lines"
+    },
+    {
+      "tool": "get_rollout_history",
+      "input": {
+        "namespace": "boutique",
+        "deployment": "emailservice"
+      },
+      "ok": true,
+      "summary": "9 revisions"
+    },
+    {
+      "tool": "get_pod_events",
+      "input": {
+        "namespace": "boutique",
+        "name": "emailservice-cd59fb8cf-zmt4z"
+      },
+      "ok": true,
+      "summary": "7 events"
+    }
+  ],
+  "correlation": {
+    "timeline": [
+      {
+        "when": "2026-08-03T05:31:10Z",
+        "what": "Revision 50 of emailservice deployment created with image v0.10.5 (per get_rollout_history)"
+      },
+      {
+        "when": "2026-08-03T05:31:11Z",
+        "what": "emailservice-7cd44fdb6f-46g89 pod started from revision 50 and entered Running state"
+      },
+      {
+        "when": "2026-08-03T06:19:19Z",
+        "what": "Revision 51 of emailservice deployment created with same image tag v0.10.5 but different ReplicaSet emailservice-cd59fb8cf (per get_rollout_history)"
+      },
+      {
+        "when": "2026-08-19T07:12:38Z",
+        "what": "emailservice-cd59fb8cf-zmt4z pod (revision 51) scheduled on k3d-sre-lab-agent-0"
+      },
+      {
+        "when": "2026-08-19T07:12:41Z–07:12:42Z",
+        "what": "Container image pulled and created 4 times, indicating immediate startup crash cycle (per get_pod_events)"
+      },
+      {
+        "when": "2026-08-19T07:12:43Z onwards",
+        "what": "Readiness probe fails repeatedly: timeout connecting to 10.42.2.206:8080 (per get_pod_events)"
+      },
+      {
+        "when": "2026-08-19T07:12:44Z onwards",
+        "what": "Liveness probe fails repeatedly: same timeout; container never becomes healthy (per get_pod_events)"
+      },
+      {
+        "when": "2026-08-19T07:12:42Z–present",
+        "what": "Container crashes on startup with ModuleNotFoundError: No module named 'nonexistent_sre_eval_module' (per get_pod_logs, current=true)"
+      }
+    ],
+    "dependency_chain": [],
+    "what_changed": "Revision 51 of the emailservice deployment, created 2026-08-03T06:19:19Z, contains a container spec or image change that introduced broken application code. Although the image tag v0.10.5 matches revision 50, the actual image content differs (re-tagged or rebuilt), now containing an import statement for a non-existent module. When revision 51 pods were scheduled 2026-08-19T07:12:38Z, they immediately crashed on startup.",
+    "summary": "emailservice revision 51 has broken Python code that imports a non-existent module. Pods fail to start, exit code 1, triggering CrashLoopBackOff with restart count climbing. Revision 50 pods remain Running despite prior issues. The image tag was not changed between revisions, but image content was, indicating a re-tag or rebuild of v0.10.5 with defective code."
+  },
+  "hypotheses": [
+    {
+      "cause": "The container image (v0.10.5) contains broken Python code that attempts to import a non-existent module 'nonexistent_sre_eval_module' on startup, causing ModuleNotFoundError and immediate exit",
+      "category": "workload",
+      "confidence": 0.75,
+      "supporting": [
+        "Pod logs (emailservice-cd59fb8cf-zmt4z) show exact error: 'ModuleNotFoundError: No module named nonexistent_sre_eval_module'",
+        "Error occurs immediately on container start, before health checks can pass (pod events: Created → Started → Unhealthy within seconds)",
+        "The module name 'nonexistent_sre_eval_module' strongly suggests intentional/injected breakage",
+        "Exit code 1 indicates application-level failure, not infrastructure issue"
+      ],
+      "against": [
+        "Both revision 50 and revision 51 use the SAME image tag (v0.10.5), yet revision 50 pod is Ready and running",
+        "If the same image contains this code, revision 50 should crash too, but it shows only exit code 137 (SIGKILL from resource pressure), not code 1",
+        "No image pull errors in pod events; image is 'already present on machine', suggesting the base image is not corrupted"
+      ]
+    },
+    {
+      "cause": "The image tag v0.10.5 was re-pushed (overwritten) after revision 50 was deployed, and the new image contains broken code that tries to import the non-existent module",
+      "category": "rollout",
+      "confidence": 0.7,
+      "supporting": [
+        "Revision 51 (emailservice-cd59fb8cf) was created 2026-08-03T06:19:19Z, after revision 50 (2026-08-03T05:31:10Z), indicating a rollout occurred",
+        "The Python ModuleNotFoundError is a code-level failure, consistent with a broken image release",
+        "Pod events show 4 restart attempts (count: 4 on Created/Started), matching CrashLoopBackOff behavior for a repeatedly-failing image"
+      ],
+      "against": [
+        "Revision history shows both revisions reference the same image tag (v0.10.5), with no digest or tag change recorded",
+        "Revision 50 is still Ready and running (1 replica shown in rollout history replicas:1), proving the v0.10.5 tag worked at deployment time",
+        "If v0.10.5 was overwritten, both revisions' pods should eventually see the new (broken) image; revision 50 should also crash, but it only restarts (likely OOM/resource, exit code 137)"
+      ]
+    },
+    {
+      "cause": "A configuration change (env var, ConfigMap, or startup parameter) was applied only to revision 51, causing the application to execute code that imports a non-existent module",
+      "category": "config",
+      "confidence": 0.5,
+      "supporting": [
+        "Revision 50 and 51 use the same image tag but exhibit different behaviors (50 Ready, 51 crashing), pointing to external state/config difference",
+        "Config changes can be deployed without changing the image tag or triggering a true rollout",
+        "The module name 'nonexistent_sre_eval_module' could be a flag/feature-gate value passed via config that was accidentally activated"
+      ],
+      "against": [
+        "No pod environment or configuration details visible in tool output to support a config change hypothesis",
+        "The Python stack trace shows a direct import statement, not conditional/parametric logic",
+        "Pod events do not mention ConfigMap or Secret updates; only image pull and container lifecycle events",
+        "get_workload_status shows only pod/deployment status, not recent config changes (would require etcd audit or config management tool)"
+      ]
+    },
+    {
+      "cause": "The new pod (revision 51) was scheduled on a different node (k3d-sre-lab-agent-0) that has a corrupted or outdated image cache, or lacks required system libraries for the Python module",
+      "category": "node",
+      "confidence": 0.3,
+      "supporting": [
+        "Revision 50 pod runs on k3d-sre-lab-server-0; revision 51 pod runs on k3d-sre-lab-agent-0 (different nodes)",
+        "Pod events state image is 'already present on machine', but an older/corrupted version of that image could be cached locally"
+      ],
+      "against": [
+        "Pod events show 'already present on machine and can be accessed by the pod' (count:4 across 4 restart attempts), consistent with successful access",
+        "No image extraction or pull errors in pod events; if the cached image were corrupted, kubelet would fail with a different error",
+        "The error is a Python module import failure (application code), not a missing system library or container-level issue",
+        "get_node_status was not queried, but there are no symptoms of node MemoryPressure, DiskPressure, or NotReady state in workload status"
+      ]
+    },
+    {
+      "cause": "emailservice startup code tries to contact a required dependency (external API, database, or config server) that is currently unavailable, and that failure manifests as a module import error in error handling code",
+      "category": "dependency",
+      "confidence": 0.15,
+      "supporting": [
+        "Container startup errors can occur if an init-time dependency check fails"
+      ],
+      "against": [
+        "The error is a Python ModuleNotFoundError, not a connection timeout or DNS resolution failure",
+        "Pod events show connection timeouts to 10.42.2.206:8080 (the pod's own health check port), not external dependency timeouts",
+        "Revision 50 is also calling the same dependencies but is Ready, ruling out a widespread dependency outage",
+        "The module 'nonexistent_sre_eval_module' does not suggest a real external service; it is too obviously a mock/test name"
+      ]
+    },
+    {
+      "cause": "The pod cannot be scheduled due to resource constraints, node taints, or affinity rules, and is stuck Pending",
+      "category": "scheduling",
+      "confidence": 0.05,
+      "supporting": [
+        "Revision 51 pod is on a different node than revision 50, indicating scheduling did occur"
+      ],
+      "against": [
+        "Pod phase is Running, not Pending; scheduling succeeded",
+        "Pod events show normal Scheduled, Pulled, Created, Started sequence; no scheduling failures",
+        "The pod crash happens after start, not at scheduling time"
+      ]
+    }
+  ],
+  "prior_incidents": [],
+  "input_tokens": 2341,
+  "cache_write_tokens": 32338,
+  "cache_read_tokens": 21222,
+  "output_tokens": 10471,
+  "cost_usd": 0.09724069999999999,
+  "duration_s": 134.52976778100037
+}

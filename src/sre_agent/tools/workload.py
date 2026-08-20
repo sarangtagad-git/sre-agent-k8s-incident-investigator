@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
+
 from ..k8s import load_readonly_clients
-from ..observability import get_tracer
+from ..observability import get_tracer, truncate_for_trace as _truncate
 from .schemas import ContainerState, DeploymentStatus, NamespaceWorkloadStatus, PodStatus
 
 _tracer = get_tracer()
 
 
-def _container_state(cs) -> ContainerState:
+def _container_state(cs, spec_container=None) -> ContainerState:
     state, reason, message, exit_code = "unknown", None, None, None
     if cs.state:
         if cs.state.waiting:
@@ -24,6 +26,16 @@ def _container_state(cs) -> ContainerState:
     if cs.last_state and cs.last_state.terminated:
         last_reason = cs.last_state.terminated.reason
         last_exit = cs.last_state.terminated.exit_code
+    # Resource requests/limits live on the pod SPEC (what was asked for), not on the
+    # container STATUS (`cs`, what's actually running) — cross-referenced by name. This
+    # is deterministic K8s data, not a Prometheus metric guess: live-verified 2026-08-20,
+    # an agent investigating a CPU-throttled service never once checked this and invented
+    # an unrelated root cause instead. Exposing it directly here means "is this container
+    # resource-starved by its own limit?" no longer depends on the agent picking the right
+    # PromQL metric name for a cgroup stat that may not even be scraped in every cluster.
+    resources = spec_container.resources if spec_container else None
+    limits = (resources.limits if resources else None) or {}
+    requests = (resources.requests if resources else None) or {}
     return ContainerState(
         name=cs.name,
         ready=bool(cs.ready),
@@ -34,6 +46,10 @@ def _container_state(cs) -> ContainerState:
         exit_code=exit_code,
         last_reason=last_reason,
         last_exit_code=last_exit,
+        cpu_limit=limits.get("cpu"),
+        cpu_request=requests.get("cpu"),
+        memory_limit=limits.get("memory"),
+        memory_request=requests.get("memory"),
     )
 
 
@@ -43,7 +59,10 @@ def _pod_status(pod) -> PodStatus:
     for cond in st.conditions or []:
         if cond.type == "Ready":
             ready = cond.status == "True"
-    containers = [_container_state(cs) for cs in (st.container_statuses or [])]
+    spec_by_name = {c.name: c for c in (pod.spec.containers or [])} if pod.spec else {}
+    containers = [
+        _container_state(cs, spec_by_name.get(cs.name)) for cs in (st.container_statuses or [])
+    ]
     restarts = sum(c.restart_count for c in containers)
     # Headline reason: the first not-ready container's reason (waiting or terminated).
     reason = next((c.reason for c in containers if not c.ready and c.reason), None)
@@ -95,6 +114,9 @@ def get_workload_status(
         span.set_attribute("k8s.namespace", namespace)
         if selector:
             span.set_attribute("k8s.selector", selector)
+        span.set_attribute(
+            "gen_ai.tool.call.arguments", json.dumps({"namespace": namespace, "selector": selector})
+        )
         pods = clients["core"].list_namespaced_pod(namespace, label_selector=selector).items
         deploys = clients["apps"].list_namespaced_deployment(namespace, label_selector=selector).items
         result = NamespaceWorkloadStatus(
@@ -104,4 +126,5 @@ def get_workload_status(
         )
         span.set_attribute("result.pod_count", len(result.pods))
         span.set_attribute("result.deployment_count", len(result.deployments))
+        span.set_attribute("gen_ai.tool.call.result", _truncate(result.model_dump_json()))
         return result

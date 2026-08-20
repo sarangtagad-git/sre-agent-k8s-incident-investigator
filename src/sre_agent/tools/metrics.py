@@ -11,10 +11,12 @@ Requires Prometheus reachable at settings.prometheus_url, e.g.:
 
 from __future__ import annotations
 
+import json
+
 import httpx
 
 from ..config import get_settings
-from ..observability import get_tracer
+from ..observability import get_tracer, truncate_for_trace as _truncate
 from .schemas import MetricSample, MetricSeries, PrometheusRangeResult, PrometheusResult
 
 _tracer = get_tracer()
@@ -30,6 +32,12 @@ def query_prometheus(
     base = (base_url or get_settings().prometheus_url).rstrip("/")
     with _tracer.start_as_current_span("tool.query_prometheus") as span:
         span.set_attribute("prometheus.query", query)
+        span.set_attribute("gen_ai.tool.call.arguments", json.dumps({"query": query, "time": time}))
+
+        def _done(result: PrometheusResult) -> PrometheusResult:
+            span.set_attribute("gen_ai.tool.call.result", _truncate(result.model_dump_json()))
+            return result
+
         params: dict = {"query": query}
         if time is not None:
             params["time"] = time
@@ -37,10 +45,10 @@ def query_prometheus(
             resp = httpx.get(f"{base}/api/v1/query", params=params, timeout=timeout)
             payload = resp.json()
         except Exception as exc:  # noqa: BLE001 — connection/JSON errors -> captured
-            return PrometheusResult(query=query, error=f"request failed: {exc}")
+            return _done(PrometheusResult(query=query, error=f"request failed: {exc}"))
 
         if payload.get("status") != "success":
-            return PrometheusResult(query=query, error=payload.get("error", "query failed"))
+            return _done(PrometheusResult(query=query, error=payload.get("error", "query failed")))
 
         data = payload["data"]
         rtype = data.get("resultType", "")
@@ -56,7 +64,7 @@ def query_prometheus(
             samples.append(MetricSample(labels={}, value=float(val), timestamp=float(ts)))
 
         span.set_attribute("result.sample_count", len(samples))
-        return PrometheusResult(query=query, result_type=rtype, samples=samples)
+        return _done(PrometheusResult(query=query, result_type=rtype, samples=samples))
 
 
 def query_prometheus_range(
@@ -71,15 +79,24 @@ def query_prometheus_range(
     base = (base_url or get_settings().prometheus_url).rstrip("/")
     with _tracer.start_as_current_span("tool.query_prometheus_range") as span:
         span.set_attribute("prometheus.query", query)
+        span.set_attribute(
+            "gen_ai.tool.call.arguments",
+            json.dumps({"query": query, "start": start, "end": end, "step": step}),
+        )
+
+        def _done(result: PrometheusRangeResult) -> PrometheusRangeResult:
+            span.set_attribute("gen_ai.tool.call.result", _truncate(result.model_dump_json()))
+            return result
+
         params = {"query": query, "start": start, "end": end, "step": step}
         try:
             resp = httpx.get(f"{base}/api/v1/query_range", params=params, timeout=timeout)
             payload = resp.json()
         except Exception as exc:  # noqa: BLE001
-            return PrometheusRangeResult(query=query, error=f"request failed: {exc}")
+            return _done(PrometheusRangeResult(query=query, error=f"request failed: {exc}"))
 
         if payload.get("status") != "success":
-            return PrometheusRangeResult(query=query, error=payload.get("error", "query failed"))
+            return _done(PrometheusRangeResult(query=query, error=payload.get("error", "query failed")))
 
         series = [
             MetricSeries(
@@ -89,4 +106,4 @@ def query_prometheus_range(
             for item in payload["data"].get("result", [])
         ]
         span.set_attribute("result.series_count", len(series))
-        return PrometheusRangeResult(query=query, series=series)
+        return _done(PrometheusRangeResult(query=query, series=series))

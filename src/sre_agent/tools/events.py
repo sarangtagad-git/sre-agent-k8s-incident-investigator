@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from ..k8s import load_readonly_clients
-from ..observability import get_tracer
+from ..observability import get_tracer, truncate_for_trace as _truncate
 from .schemas import PodEvent
 
 _tracer = get_tracer()
@@ -44,10 +45,15 @@ def get_pod_events(
     with _tracer.start_as_current_span("tool.get_pod_events") as span:
         span.set_attribute("k8s.namespace", namespace)
         span.set_attribute("k8s.object", name)
+        span.set_attribute("gen_ai.tool.call.arguments", json.dumps({"namespace": namespace, "name": name}))
         raw = clients["core"].list_namespaced_event(
             namespace, field_selector=f"involvedObject.name={name}"
         ).items
         events = [_event(e) for e in raw]
         events.sort(key=lambda ev: ev.last_seen or _EPOCH)
         span.set_attribute("result.event_count", len(events))
+        span.set_attribute(
+            "gen_ai.tool.call.result",
+            _truncate(json.dumps([e.model_dump(mode="json") for e in events])),
+        )
         return events

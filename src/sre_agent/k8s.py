@@ -27,4 +27,7 @@ def load_readonly_clients() -> dict:
     return {
         "core": client.CoreV1Api(),
         "apps": client.AppsV1Api(),
+        # NetworkPolicies live under networking.k8s.io, not core/v1 — needed by
+        # get_network_policies (see tools/network.py).
+        "networking": client.NetworkingV1Api(),
     }

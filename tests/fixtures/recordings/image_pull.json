@@ -1,0 +1,171 @@
+{
+  "report": {
+    "summary": "Rollout failure caused by ImagePullBackOff. Deployment revision 27 introduced an invalid container image reference (nonexistent.invalid/currencyservice:v0-broken-sre-eval) pointing to a non-existent registry domain. The new pod cannot resolve or pull this image and remains Pending, blocking rollout completion. The previous revision 26 pod continues running with frequent restarts.",
+    "root_cause": "Deployment manifest revision 27 (created 2026-08-03T06:17:36Z) specifies a non-existent container image registry in the image field. The image reference nonexistent.invalid/currencyservice:v0-broken-sre-eval cannot be resolved; kubelet receives DNS error 'lookup nonexistent.invalid: no such host' when attempting to pull the image on 2026-08-19T07:10:33Z. This blocks the new replica from reaching Ready state.",
+    "category": "rollout",
+    "confidence": "high",
+    "confidence_score": 0.95,
+    "evidence": [
+      "Rollout history shows revision 26 (2026-08-03T05:31:09Z) deployed working image: us-central1-docker.pkg.dev/google-samples/microservices-demo/currencyservice:v0.10.5",
+      "Rollout history shows revision 27 (2026-08-03T06:17:36Z, current) changed image to: nonexistent.invalid/currencyservice:v0-broken-sre-eval",
+      "Pod currencyservice-5d84c4b9c7-htjv4 events show Failed message: 'failed to resolve reference \"nonexistent.invalid/currencyservice:v0-broken-sre-eval\": failed to do request... lookup nonexistent.invalid: no such host'",
+      "Pod container state shows ImagePullBackOff reason with message containing 'ErrImagePull: failed to pull and unpack image'",
+      "New pod is Pending (not Running) with restart_count=0, indicating failure before container start",
+      "Old pod from revision 26 remains Running and Ready=true on same node, proving node DNS and image pull functionality are operational",
+      "Image tag includes 'v0-broken-sre-eval' explicitly naming the configuration as broken"
+    ],
+    "alternatives": [
+      "Intentional test/SRE evaluation deployment using deliberately broken image (0.25): rejected because alert symptom describes unintended rollout blockage, not a test scenario; this is motivation not mechanism",
+      "Image pull secret misconfiguration or authentication failure (0.1): rejected because error explicitly states DNS resolution failure ('no such host'), not 401/403; authentication errors surface as access denied, not lookup failure",
+      "Node or cluster DNS failure (0.05): rejected because old pod from revision 26 successfully pulls from us-central1-docker.pkg.dev on same node, proving DNS is operational; the domain nonexistent.invalid does not exist anywhere",
+      "Network policy or firewall blocking registry access (0.05): rejected because error is DNS lookup failure not connection timeout/refused; network policy would affect all image pulls uniformly and would have blocked revision 26 pod as well"
+    ],
+    "impact": "The currencyservice deployment cannot progress: new replica is stuck Pending with ImagePullBackOff. The previous replica from revision 26 continues running but with 27 restarts and exit code 137 (killed), indicating it is unstable. Service remains partially available but at risk if the old pod fully fails. Rollout is blocked indefinitely until the image reference is corrected.",
+    "remediation": {
+      "action": "Rollback deployment to revision 26 which uses the valid working image",
+      "command": "kubectl rollout undo deployment/currencyservice -n boutique --to-revision=26",
+      "rationale": "Revision 26 (2026-08-03T05:31:09Z) successfully deployed with image us-central1-docker.pkg.dev/google-samples/microservices-demo/currencyservice:v0.10.5. Rolling back reverts the broken image reference and allows the rollout to complete. The old pod will be terminated and replaced by a new, stable replica using the known-good image.",
+      "reversible": true
+    }
+  },
+  "evidence": [
+    {
+      "tool": "get_workload_status",
+      "input": {
+        "namespace": "boutique",
+        "selector": "app=currencyservice"
+      },
+      "ok": true,
+      "summary": "2 pods, 1 deployments"
+    },
+    {
+      "tool": "get_pod_events",
+      "input": {
+        "namespace": "boutique",
+        "name": "currencyservice-5d84c4b9c7-htjv4"
+      },
+      "ok": true,
+      "summary": "6 events"
+    },
+    {
+      "tool": "get_rollout_history",
+      "input": {
+        "namespace": "boutique",
+        "deployment": "currencyservice"
+      },
+      "ok": true,
+      "summary": "6 revisions"
+    }
+  ],
+  "correlation": {
+    "timeline": [
+      {
+        "when": "2026-08-03T05:31:09Z",
+        "what": "Revision 26 deployed with working image us-central1-docker.pkg.dev/google-samples/microservices-demo/currencyservice:v0.10.5 (from get_rollout_history)"
+      },
+      {
+        "when": "2026-08-03T06:17:36Z",
+        "what": "Revision 27 created with broken image nonexistent.invalid/currencyservice:v0-broken-sre-eval (from get_rollout_history)"
+      },
+      {
+        "when": "2026-08-03 to present",
+        "what": "Old pod from revision 26 continues running but accumulates 27 restarts with exit code 137 (killed), indicating ongoing instability (from get_workload_status)"
+      },
+      {
+        "when": "2026-08-19T07:10:29Z",
+        "what": "New pod currencyservice-5d84c4b9c7-htjv4 from revision 27 is scheduled (from get_workload_status start_time)"
+      },
+      {
+        "when": "2026-08-19T07:10:33Z",
+        "what": "Kubelet attempts to pull image nonexistent.invalid/currencyservice:v0-broken-sre-eval (from get_pod_events)"
+      },
+      {
+        "when": "2026-08-19T07:10:33Z",
+        "what": "Image pull fails with 'lookup nonexistent.invalid: no such host' error (from get_pod_events and get_workload_status container message)"
+      },
+      {
+        "when": "2026-08-19T07:10:34Z onwards",
+        "what": "Pod enters ImagePullBackOff state and remains Pending, preventing rollout completion (from get_workload_status and get_pod_events)"
+      }
+    ],
+    "dependency_chain": [],
+    "what_changed": "Deployment image specification changed from us-central1-docker.pkg.dev/google-samples/microservices-demo/currencyservice:v0.10.5 (revision 26) to nonexistent.invalid/currencyservice:v0-broken-sre-eval (revision 27) on 2026-08-03T06:17:36Z. The new image references a non-existent container registry that cannot be resolved.",
+    "summary": "Rollout failure caused by ImagePullBackOff. A recent deployment update (revision 27) introduced an invalid container image reference pointing to a non-existent registry. The new pod cannot pull the image and remains Pending. The previous pod from revision 26 continues running with frequent restarts but is not being replaced."
+  },
+  "hypotheses": [
+    {
+      "cause": "Deployment manifest revision 27 references non-existent container image registry (nonexistent.invalid/currencyservice:v0-broken-sre-eval)",
+      "category": "rollout",
+      "confidence": 0.95,
+      "supporting": [
+        "Pod events show Failed pulling with message 'lookup nonexistent.invalid: no such host'",
+        "Rollout history revision 27 (current, created 2026-08-03T06:17:36Z) uses image 'nonexistent.invalid/currencyservice:v0-broken-sre-eval'",
+        "Previous revision 26 (created 2026-08-03T05:31:09Z) used valid image 'us-central1-docker.pkg.dev/google-samples/microservices-demo/currencyservice:v0.10.5' and remains running",
+        "Pod scheduled successfully to node k3d-sre-lab-agent-0 but fails at image pull stage with ImagePullBackOff",
+        "Image tag includes 'v0-broken-sre-eval' indicating deliberate or accidental broken configuration"
+      ],
+      "against": []
+    },
+    {
+      "cause": "Intentional test/SRE evaluation deployment using deliberately broken image configuration",
+      "category": "config",
+      "confidence": 0.25,
+      "supporting": [
+        "Image tag explicitly includes 'broken-sre-eval' suggesting test/evaluation purpose",
+        "Registry name 'nonexistent.invalid' is obviously artificial/intentional fake domain"
+      ],
+      "against": [
+        "Alert symptom 'rollout not progressing' suggests unintended/unexpected behavior rather than intentional test",
+        "This is a motivation hypothesis rather than a technical root cause—it does not explain HOW the failure occurs, only WHY someone set it up"
+      ]
+    },
+    {
+      "cause": "Image pull secret misconfiguration, missing credentials, or authentication failure to container registry",
+      "category": "config",
+      "confidence": 0.1,
+      "supporting": [
+        "Pod fails during image pull, which requires authentication"
+      ],
+      "against": [
+        "Error message explicitly states 'lookup nonexistent.invalid: no such host'—a DNS resolution failure, not an auth error",
+        "Authentication failures surface as 401/403 or 'access denied' messages, not 'no such host'",
+        "The registry domain does not exist in DNS—even with perfect credentials, there is nothing to authenticate to",
+        "Old pod running on same node using different (working) registry means image pull secrets are functional"
+      ]
+    },
+    {
+      "cause": "Node or cluster DNS configuration failure preventing resolution of container image registries",
+      "category": "networking",
+      "confidence": 0.05,
+      "supporting": [
+        "DNS lookup fails during image pull attempt"
+      ],
+      "against": [
+        "Error specifically references 'nonexistent.invalid'—a domain that does not exist anywhere; DNS failure here is expected and correct",
+        "Old pod running successfully on same node (k3d-sre-lab-agent-0) proves node DNS is functional",
+        "If cluster DNS were broken, image pulls for existing valid registries (us-central1-docker.pkg.dev) would also fail, but revision 26 pod is running"
+      ]
+    },
+    {
+      "cause": "Network policy or firewall rule blocking outbound traffic to container image registries",
+      "category": "networking",
+      "confidence": 0.05,
+      "supporting": [
+        "Image pull requires network egress to reach registry servers"
+      ],
+      "against": [
+        "Error is DNS resolution failure ('no such host'), not connection timeout or refused—characteristic of non-existent domain, not blocked traffic",
+        "If network policy blocked registry access, we would see timeouts or 'connection refused', not 'lookup' failure",
+        "Old pod is running successfully on the same node, proving node has outbound connectivity",
+        "Network policy would affect all image pulls uniformly; valid registries (us-central1-docker.pkg.dev) in revision 26 would also fail"
+      ]
+    }
+  ],
+  "prior_incidents": [],
+  "input_tokens": 5263,
+  "cache_write_tokens": 21095,
+  "cache_read_tokens": 0,
+  "output_tokens": 7137,
+  "cost_usd": 0.06731675000000001,
+  "duration_s": 70.91181321499971
+}

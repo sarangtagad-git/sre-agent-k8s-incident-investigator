@@ -235,11 +235,23 @@ def eval_cmd(
     incident: str = typer.Option(None, "--incident", "-i", help="run only this incident (by name)"),
     keep: bool = typer.Option(False, "--keep", help="leave the incident staged (don't revert)"),
     yes: bool = typer.Option(False, "--yes", "-y", help="skip the cost/mutation confirmation"),
+    record: bool = typer.Option(
+        False, "--record", help="also save each RunResult to tests/fixtures/recordings/ for --replay"
+    ),
+    replay: bool = typer.Option(
+        False, "--replay",
+        help="score a previously --record'ed run instead of the live agent — free, no cluster changes",
+    ),
 ) -> None:
     """Regression-test the agent: stage each incident, run it, assert the RCA, then revert.
 
     Costs ~$0.15 per incident and mutates the cluster, so it is a deliberate command — not
     part of the (free, cluster-less) unit test suite. Exits non-zero if any incident fails.
+
+    --record saves each live run so --replay can re-score it later for free, with no API
+    call and no cluster changes — use --replay while tuning must_include/expect_categories
+    in evals.py. --replay runs are NOT written to data/history.db (they're not a new
+    investigation, just re-grading an old one — see docs/test-data-hygiene notes).
     """
     import time
 
@@ -247,8 +259,13 @@ def eval_cmd(
 
     from . import history_store
     from .agent import investigate as run
+    from .eval_recording import load_recording, save_recording
     from .evals import INCIDENTS, Check, incident_passed, score
     from .remediation import run_kubectl
+
+    if record and replay:
+        console.print("[red]--record and --replay are mutually exclusive (replay never calls the agent).[/]")
+        raise typer.Exit(code=2)
 
     incidents = [i for i in INCIDENTS if incident in (None, i.name)]
     if not incidents:
@@ -256,7 +273,7 @@ def eval_cmd(
         console.print(f"[red]No incident named {incident!r}.[/] Known: {names}")
         raise typer.Exit(code=2)
 
-    if not yes:
+    if not replay and not yes:
         console.print(
             f"[yellow]This stages/reverts {len(incidents)} real incident(s) and runs the live "
             f"agent (~$0.15 each).[/]"
@@ -264,26 +281,47 @@ def eval_cmd(
         if not typer.confirm("Proceed?", default=False):
             raise typer.Abort()
 
+    def _score_and_report(result, inc) -> tuple[bool, list]:
+        report = result.report
+        checks = score(report, inc)
+        ok = incident_passed(checks)
+        console.print(
+            f"  RCA: [bold]{report.category}[/] · {report.confidence_score:.2f} — "
+            f"{report.root_cause[:90]}…"
+        )
+        for c in checks:
+            mark = "[green]✓[/]" if c.passed else "[red]✗[/]"
+            tag = "[dim](critical)[/]" if c.critical else "[dim](info)[/]"
+            console.print(f"    {mark} {c.name} {tag}  [dim]{c.detail}[/]")
+        return ok, checks
+
     results: list[tuple[str, bool, list, float]] = []
     for inc in incidents:
         console.rule(f"[bold]{inc.name}[/] — {inc.description}")
+
+        if replay:
+            # No staging, no live agent call, no revert — just re-score a saved answer.
+            try:
+                result = load_recording(inc.name)
+            except FileNotFoundError as e:
+                console.print(f"  [red]{e}[/]")
+                results.append((inc.name, False, [Check("recording", False, True, str(e))], 0.0))
+                continue
+            console.print("  [dim](replayed from saved recording — no cluster changes, no API call)[/]")
+            ok, checks = _score_and_report(result, inc)
+            results.append((inc.name, ok, checks, result.duration_s))
+            continue
+
         for args in inc.stage:
             run_kubectl(args)
         console.print(f"[dim]staged; waiting {inc.wait_seconds}s for the failure to surface…[/]")
         time.sleep(inc.wait_seconds)
         try:
             result = run(inc.context)
-            report = result.report
-            checks = score(report, inc)
-            ok = incident_passed(checks)
-            console.print(
-                f"  RCA: [bold]{report.category}[/] · {report.confidence_score:.2f} — "
-                f"{report.root_cause[:90]}…"
-            )
-            for c in checks:
-                mark = "[green]✓[/]" if c.passed else "[red]✗[/]"
-                tag = "[dim](critical)[/]" if c.critical else "[dim](info)[/]"
-                console.print(f"    {mark} {c.name} {tag}  [dim]{c.detail}[/]")
+            if record:
+                path = save_recording(inc.name, result)
+                console.print(f"  [dim]recorded -> {path}[/]")
+            ok, checks = _score_and_report(result, inc)
             results.append((inc.name, ok, checks, result.duration_s))
             run_id = history_store.save_run(
                 result,
