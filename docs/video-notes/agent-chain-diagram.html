@@ -1,0 +1,282 @@
+<title>Investigation Chain</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6b7280;
+    --card-bg: rgba(0,0,0,0.02);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14161a;
+      --fg: #eef0f3;
+      --muted: #9aa2b1;
+      --card-bg: rgba(255,255,255,0.03);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161a;
+    --fg: #eef0f3;
+    --muted: #9aa2b1;
+    --card-bg: rgba(255,255,255,0.03);
+  }
+  body { background: var(--bg); color: var(--fg); margin: 0; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 28px 16px 48px; font-family: Arial, Helvetica, sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
+  figure { margin: 0; }
+  svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 14px; line-height: 1.5; }
+  .dl-note { color: var(--muted); font-size: 12px; margin-top: 22px; border-top: 1px solid var(--card-bg); padding-top: 14px; }
+</style>
+
+<div class="wrap">
+  <h1>From incident to verified fix — the agent's full chain of calls</h1>
+  <p class="sub">sre-agent investigate → LangGraph pipeline → proposed fix → human-gated remediation → verified outcome</p>
+
+  <figure>
+    <svg viewBox="0 0 1600 1860" role="img" aria-label="Flow diagram: an incident triggers a terminal command, which runs a six-stage LangGraph investigation pipeline (gather, recall, correlate, hypothesize, rank, propose), with the gather stage expanded to show its ReAct reason-act-observe loop over read-only tools. The pipeline outputs a proposed-only remediation, which if run with --execute passes through a four-step human-gated remediation chain (allowlist validation, dry-run, human approval, apply) with reject branches at the allowlist and approval steps, then a verify-recovery polling step that ends in either confirmed-healthy or still-unhealthy, both recorded to history and the dashboard.">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+        <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#DC2626"/>
+        </marker>
+        <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#16A34A"/>
+        </marker>
+      </defs>
+
+      <g font-family="Arial, Helvetica, sans-serif" fill="currentColor">
+
+        <!-- ===== Title block ===== -->
+        <text x="60" y="34" font-size="24" font-weight="700">SRE Agent — chain of calls</text>
+        <text x="60" y="56" font-size="13" fill="var(--muted, #6b7280)">one incident, start to finish</text>
+
+        <!-- Legend, top right -->
+        <g font-size="12">
+          <circle cx="1160" cy="26" r="5" fill="#3B82F6"/>
+          <text x="1172" y="30">LLM call (Claude)</text>
+          <circle cx="1160" cy="46" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <text x="1172" y="50">deterministic — no LLM</text>
+          <circle cx="1360" cy="26" r="5" fill="#D97706"/>
+          <text x="1372" y="30">human decision</text>
+          <circle cx="1360" cy="46" r="5" fill="#DC2626"/>
+          <text x="1372" y="50">rejected / failed</text>
+        </g>
+
+        <!-- ===================================================== -->
+        <!-- SECTION 1 — TRIGGER -->
+        <!-- ===================================================== -->
+        <text x="60" y="108" font-size="15" font-weight="700">① trigger</text>
+        <line x1="60" y1="118" x2="1540" y2="118" stroke="currentColor" stroke-opacity="0.15"/>
+
+        <rect x="60" y="132" width="460" height="118" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <text x="82" y="162" font-size="14" font-weight="700">Incident occurs</text>
+        <text x="82" y="186" font-size="12"><tspan x="82" dy="0">"checkoutservice latency</tspan><tspan x="82" dy="16">climbing"</tspan></text>
+        <text x="82" y="228" font-size="11" fill="var(--muted,#6b7280)"><tspan x="82" dy="0">signal: Prometheus alert,</tspan><tspan x="82" dy="14">or a human's own suspicion</tspan></text>
+
+        <path d="M520,191 L600,191" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <rect x="600" y="132" width="940" height="118" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <text x="622" y="162" font-size="14" font-weight="700">You run the CLI</text>
+        <text x="622" y="192" font-family="'Courier New', monospace" font-size="13">
+          <tspan x="622" dy="0">$ sre-agent investigate boutique \</tspan>
+          <tspan x="622" dy="20">    -w checkoutservice -a "checkout latency climbing" --execute</tspan>
+        </text>
+        <text x="622" y="234" font-size="11" fill="var(--muted,#6b7280)">--execute opens the approval gate later; omit it to only propose a fix</text>
+
+        <path d="M1070,250 L1070,296 L175,296 L175,314" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- ===================================================== -->
+        <!-- SECTION 2 — PIPELINE -->
+        <!-- ===================================================== -->
+        <text x="60" y="292" font-size="15" font-weight="700">② investigation pipeline — LangGraph, 6 stages</text>
+        <line x1="60" y1="302" x2="1540" y2="302" stroke="currentColor" stroke-opacity="0.15"/>
+
+        <!-- gather -->
+        <rect x="60" y="316" width="230" height="150" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="#3B82F6" stroke-width="2"/>
+        <circle cx="76" cy="336" r="5" fill="#3B82F6"/>
+        <text x="88" y="340" font-size="14" font-weight="700">gather</text>
+        <text x="76" y="362" font-size="11.5"><tspan x="76" dy="0">ReAct loop: reason →</tspan><tspan x="76" dy="15">call a read-only tool →</tspan><tspan x="76" dy="15">observe. Repeats.</tspan></text>
+        <text x="76" y="452" font-size="10.5" fill="var(--muted,#6b7280)">expanded below ↓</text>
+
+        <path d="M290,391 L314,391" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- recall -->
+        <rect x="314" y="316" width="230" height="150" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="330" cy="336" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="342" y="340" font-size="14" font-weight="700">recall</text>
+        <text x="330" y="362" font-size="11.5"><tspan x="330" dy="0">look up prior incidents</tspan><tspan x="330" dy="15">for this namespace +</tspan><tspan x="330" dy="15">workload (history.db)</tspan></text>
+        <text x="330" y="422" font-size="10.5" fill="var(--muted,#6b7280)"><tspan x="330" dy="0">skipped entirely for</tspan><tspan x="330" dy="14">eval-mode incidents</tspan></text>
+
+        <path d="M544,391 L568,391" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- correlate -->
+        <rect x="568" y="316" width="230" height="150" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="#3B82F6" stroke-width="2"/>
+        <circle cx="584" cy="336" r="5" fill="#3B82F6"/>
+        <text x="596" y="340" font-size="14" font-weight="700">correlate</text>
+        <text x="584" y="362" font-size="11.5"><tspan x="584" dy="0">build a timeline +</tspan><tspan x="584" dy="15">dependency chain;</tspan><tspan x="584" dy="15">note what changed</tspan></text>
+
+        <path d="M798,391 L822,391" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- hypothesize -->
+        <rect x="822" y="316" width="230" height="150" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="#3B82F6" stroke-width="2"/>
+        <circle cx="838" cy="336" r="5" fill="#3B82F6"/>
+        <text x="850" y="340" font-size="14" font-weight="700">hypothesize</text>
+        <text x="838" y="362" font-size="11.5"><tspan x="838" dy="0">weigh competing root</tspan><tspan x="838" dy="15">causes; confidence-</tspan><tspan x="838" dy="15">score each one</tspan></text>
+        <text x="838" y="422" font-size="10.5" fill="var(--muted,#6b7280)"><tspan x="838" dy="0">prior-incident digest</tspan><tspan x="838" dy="14">from recall feeds in here</tspan></text>
+
+        <path d="M1052,391 L1076,391" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- rank -->
+        <rect x="1076" y="316" width="230" height="150" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="1092" cy="336" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="1104" y="340" font-size="14" font-weight="700">rank</text>
+        <text x="1092" y="362" font-size="11.5"><tspan x="1092" dy="0">sort hypotheses by</tspan><tspan x="1092" dy="15">confidence, most-</tspan><tspan x="1092" dy="15">likely first</tspan></text>
+
+        <path d="M1306,391 L1330,391" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- propose -->
+        <rect x="1330" y="316" width="230" height="150" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="#3B82F6" stroke-width="2"/>
+        <circle cx="1346" cy="336" r="5" fill="#3B82F6"/>
+        <text x="1358" y="340" font-size="14" font-weight="700">propose</text>
+        <text x="1346" y="362" font-size="11.5"><tspan x="1346" dy="0">write the RCA + ONE</tspan><tspan x="1346" dy="15">gated remediation</tspan><tspan x="1346" dy="15">command</tspan></text>
+
+        <!-- gather expanded: ReAct loop inset -->
+        <path d="M175,466 L175,486" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+        <rect x="60" y="492" width="740" height="270" rx="10" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="5,4"/>
+        <text x="80" y="518" font-size="12.5" font-weight="700">gather, expanded — the ReAct loop (up to N tool iterations)</text>
+
+        <rect x="290" y="536" width="220" height="80" rx="8" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="#3B82F6" stroke-width="2"/>
+        <text x="400" y="562" font-size="12.5" font-weight="700" text-anchor="middle">① reason</text>
+        <text x="400" y="580" font-size="10.5" text-anchor="middle">LLM decides: call a tool,</text>
+        <text x="400" y="594" font-size="10.5" text-anchor="middle">or stop and hand off</text>
+
+        <rect x="80" y="676" width="220" height="80" rx="8" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <text x="190" y="702" font-size="12.5" font-weight="700" text-anchor="middle">② act</text>
+        <text x="190" y="720" font-size="10.5" text-anchor="middle">read-only tool call</text>
+        <text x="190" y="734" font-size="10.5" text-anchor="middle">(pod status, logs, events,</text>
+        <text x="190" y="748" font-size="10.5" text-anchor="middle">metrics, network, node…)</text>
+
+        <rect x="500" y="676" width="220" height="80" rx="8" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <text x="610" y="702" font-size="12.5" font-weight="700" text-anchor="middle">③ observe</text>
+        <text x="610" y="720" font-size="10.5" text-anchor="middle">tool result appended</text>
+        <text x="610" y="734" font-size="10.5" text-anchor="middle">to the transcript</text>
+
+        <path d="M370,616 L230,676" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <path d="M300,716 L500,716" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <path d="M580,676 Q460,600 430,616" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="560" y="640" font-size="10" fill="var(--muted,#6b7280)">repeat until no tool call, or max iterations</text>
+
+        <!-- ===================================================== -->
+        <!-- SECTION 3 — OUTPUT -->
+        <!-- ===================================================== -->
+        <text x="60" y="802" font-size="15" font-weight="700">③ output — proposal only, nothing has run yet</text>
+        <line x1="60" y1="812" x2="1540" y2="812" stroke="currentColor" stroke-opacity="0.15"/>
+
+        <rect x="60" y="826" width="1480" height="120" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <text x="82" y="856" font-size="14" font-weight="700">Terminal prints two panels</text>
+        <text x="82" y="882" font-size="12">Root-Cause Analysis — summary · root cause · confidence score · evidence · alternatives considered</text>
+        <text x="82" y="904" font-size="12">PROPOSED remediation command — panel marked "⚠ requires human approval, not executed"</text>
+        <text x="82" y="928" font-size="11" fill="var(--muted,#6b7280)">run saved to history.db either way, as mode="propose" or mode="execute"</text>
+
+        <path d="M700,946 L700,986" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+        <text x="700" y="1006" font-size="11" text-anchor="middle" fill="var(--muted,#6b7280)"><tspan x="700" dy="0">no --execute:</tspan><tspan x="700" dy="14">stops here</tspan></text>
+
+        <path d="M960,946 L960,986 L225,986 L225,1024" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+        <text x="600" y="980" font-size="11" fill="var(--muted,#6b7280)">--execute →</text>
+
+        <!-- ===================================================== -->
+        <!-- SECTION 4 — HUMAN-GATED REMEDIATION -->
+        <!-- ===================================================== -->
+        <text x="60" y="1002" font-size="15" font-weight="700">④ human-gated remediation — only reached with --execute</text>
+        <line x1="60" y1="1012" x2="1540" y2="1012" stroke="currentColor" stroke-opacity="0.15"/>
+
+        <rect x="60" y="1030" width="330" height="140" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <text x="82" y="1058" font-size="14" font-weight="700">validate_remediation()</text>
+        <text x="82" y="1080" font-size="11.5"><tspan x="82" dy="0">default-deny allowlist — only</tspan><tspan x="82" dy="15">scale / rollout undo / rollout</tspan><tspan x="82" dy="15">restart may mutate anything</tspan><tspan x="82" dy="15">(no delete, patch, exec, apply)</tspan></text>
+
+        <path d="M390,1100 L443,1100" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+        <text x="416" y="1092" font-size="10" text-anchor="middle" fill="var(--muted,#6b7280)">passes</text>
+
+        <rect x="443" y="1030" width="330" height="140" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <text x="465" y="1058" font-size="14" font-weight="700">dry-run</text>
+        <text x="465" y="1080" font-size="11.5"><tspan x="465" dy="0">re-run the mutating command</tspan><tspan x="465" dy="15">with --dry-run=server — the</tspan><tspan x="465" dy="15">real API server validates it,</tspan><tspan x="465" dy="15">nothing actually changes</tspan></text>
+
+        <path d="M773,1100 L826,1100" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <rect x="826" y="1030" width="330" height="140" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="#D97706" stroke-width="2.5"/>
+        <circle cx="848" cy="1052" r="5" fill="#D97706"/>
+        <text x="860" y="1056" font-size="14" font-weight="700">human approval</text>
+        <text x="848" y="1080" font-size="11.5"><tspan x="848" dy="0">you see the exact command +</tspan><tspan x="848" dy="15">rationale, type y/n. The only</tspan><tspan x="848" dy="15">judgment call in the chain —</tspan><tspan x="848" dy="15">everything before removed risk</tspan></text>
+
+        <path d="M1156,1100 L1209,1100" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+        <text x="1182" y="1092" font-size="10" text-anchor="middle" fill="var(--muted,#6b7280)">yes</text>
+
+        <rect x="1209" y="1030" width="330" height="140" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <text x="1231" y="1058" font-size="14" font-weight="700">apply</text>
+        <text x="1231" y="1080" font-size="11.5"><tspan x="1231" dy="0">runs for real, using YOUR</tspan><tspan x="1231" dy="15">kubectl context — never the</tspan><tspan x="1231" dy="15">agent's own read-only</tspan><tspan x="1231" dy="15">ServiceAccount identity</tspan></text>
+
+        <!-- reject off-ramps -->
+        <path d="M225,1170 L225,1230" fill="none" stroke="#DC2626" stroke-width="2" marker-end="url(#arrowRed)"/>
+        <rect x="60" y="1230" width="330" height="90" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="#DC2626" stroke-width="1.5"/>
+        <text x="82" y="1258" font-size="12.5" font-weight="700" fill="#DC2626">✗ rejected</text>
+        <text x="82" y="1278" font-size="11"><tspan x="82" dy="0">reason printed to the</tspan><tspan x="82" dy="15">terminal; cluster untouched</tspan></text>
+
+        <path d="M991,1170 L991,1230" fill="none" stroke="#DC2626" stroke-width="2" marker-end="url(#arrowRed)"/>
+        <rect x="826" y="1230" width="330" height="90" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="#DC2626" stroke-width="1.5"/>
+        <text x="848" y="1258" font-size="12.5" font-weight="700" fill="#DC2626">✗ declined</text>
+        <text x="848" y="1278" font-size="11"><tspan x="848" dy="0">you typed "n" — nothing</tspan><tspan x="848" dy="15">is executed, run saved as-is</tspan></text>
+
+        <path d="M1374,1170 L1374,1355 L800,1355 L800,1372" fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- ===================================================== -->
+        <!-- SECTION 5 — VERIFY & RECORD -->
+        <!-- ===================================================== -->
+        <text x="60" y="1342" font-size="15" font-weight="700">⑤ verify &amp; record</text>
+        <line x1="60" y1="1352" x2="1540" y2="1352" stroke="currentColor" stroke-opacity="0.15"/>
+
+        <rect x="550" y="1372" width="500" height="120" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <text x="800" y="1400" font-size="14" font-weight="700" text-anchor="middle">verify_recovery()</text>
+        <text x="800" y="1422" font-size="11.5" text-anchor="middle">polls get_workload_status every 5s —</text>
+        <text x="800" y="1440" font-size="11.5" text-anchor="middle">needs 3 CONSECUTIVE healthy checks</text>
+        <text x="800" y="1458" font-size="11.5" text-anchor="middle">(mirrors k8s successThreshold),</text>
+        <text x="800" y="1476" font-size="11.5" text-anchor="middle">or times out at 90s</text>
+
+        <path d="M700,1492 L620,1532" fill="none" stroke="#16A34A" stroke-width="2" marker-end="url(#arrowGreen)"/>
+        <path d="M900,1492 L980,1532" fill="none" stroke="#DC2626" stroke-width="2" marker-end="url(#arrowRed)"/>
+
+        <rect x="350" y="1536" width="380" height="90" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="#16A34A" stroke-width="2"/>
+        <text x="540" y="1566" font-size="13.5" font-weight="700" text-anchor="middle" fill="#16A34A">confirmed_healthy</text>
+        <text x="540" y="1588" font-size="11" text-anchor="middle">stable for the checked window</text>
+        <text x="540" y="1604" font-size="11" text-anchor="middle">— never a permanent guarantee</text>
+
+        <rect x="770" y="1536" width="380" height="90" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="#DC2626" stroke-width="2"/>
+        <text x="960" y="1566" font-size="13.5" font-weight="700" text-anchor="middle" fill="#DC2626">still_unhealthy</text>
+        <text x="960" y="1588" font-size="11" text-anchor="middle">a loud, honest failure —</text>
+        <text x="960" y="1604" font-size="11" text-anchor="middle">never silently assumed fixed</text>
+
+        <path d="M540,1626 L700,1674" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <path d="M960,1626 L900,1674" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+        <rect x="350" y="1678" width="800" height="110" rx="10" fill="var(--card-bg, rgba(0,0,0,0.02))" stroke="currentColor" stroke-width="1.5"/>
+        <text x="750" y="1708" font-size="13.5" font-weight="700" text-anchor="middle">saved to data/history.db</text>
+        <text x="750" y="1730" font-size="11.5" text-anchor="middle">visible via `sre-agent history` and the Streamlit dashboard —</text>
+        <text x="750" y="1748" font-size="11.5" text-anchor="middle">approval status + verification badge both shown</text>
+        <text x="750" y="1770" font-size="10.5" text-anchor="middle" fill="var(--muted,#6b7280)">feeds the next incident's "recall" step too</text>
+
+      </g>
+    </svg>
+    <figcaption>
+      Every stage a real investigation passes through: a human-typed command triggers a six-node
+      LangGraph pipeline (gather's ReAct loop shown expanded), which only ever <em>proposes</em> a
+      fix — the fix reaches the cluster solely through the four-step human-gated remediation chain,
+      with a rejection off-ramp at both the allowlist and the human-approval step, and a polling
+      verification step before anything is called "fixed."
+    </figcaption>
+  </figure>
+
+  <p class="dl-note">Right-click → "Save image as…" on the diagram (or screenshot it) to drop it straight into a video editor as a full-frame graphic or B-roll.</p>
+</div>

@@ -1,0 +1,138 @@
+SRE AGENT — LIVE DEMO COMMANDS, ALL 10 INCIDENTS
+==================================================
+Each block: 1) stage the fault  2) run the investigation  3) revert
+Run from the repo root, in a WSL terminal, venv active or use .venv/bin/sre-agent.
+
+Clean end-to-end approval demos (proposed fix PASSES the gate — full
+propose -> dry-run -> approve -> verify flow on camera):
+  bad_config, image_pull, crash_loop, cascade, unschedulable
+
+Gate-rejection demos (proposed fix is REJECTED by validate_remediation —
+good for a "the gate said no" segment, not a clean success demo):
+  cpu_throttled, oom_killed, network_blocked, wrong_service_selector
+
+node_down has a much larger blast radius (drains a real node, evicts every
+pod on it, not just boutique's) — run it alone, deliberately, not back to
+back with the others.
+
+
+1. bad_config
+--------------
+Stage:
+kubectl -n boutique patch deployment/cartservice --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/envFrom","value":[{"secretRef":{"name":"nonexistent-sre-eval-secret"}}]}]'
+
+Investigate:
+.venv/bin/sre-agent investigate boutique --workload cartservice --alert "cartservice pods stuck, never becoming Ready" --execute --verbose
+
+Revert:
+kubectl -n boutique rollout undo deployment/cartservice
+
+
+2. image_pull
+--------------
+Stage:
+kubectl -n boutique set image deployment/currencyservice '*=nonexistent.invalid/currencyservice:v0-broken-sre-eval'
+
+Investigate:
+.venv/bin/sre-agent investigate boutique --workload currencyservice --alert "currencyservice rollout not progressing (new pod not becoming Ready)" --execute --verbose
+
+Revert:
+kubectl -n boutique rollout undo deployment/currencyservice
+
+
+3. crash_loop
+--------------
+Stage:
+kubectl -n boutique patch deployment/emailservice --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/command","value":["python","-c","import nonexistent_sre_eval_module"]}]'
+
+Investigate:
+.venv/bin/sre-agent investigate boutique --workload emailservice --alert "emailservice pods CrashLoopBackOff, restart count climbing" --execute --verbose
+
+Revert:
+kubectl -n boutique rollout undo deployment/emailservice
+
+
+4. cascade  (no --workload hint — agent must trace the dependency chain itself)
+--------------
+Stage:
+kubectl -n boutique scale deployment/redis-cart --replicas=0
+
+Investigate:
+.venv/bin/sre-agent investigate boutique --alert "checkout and cart requests failing with 500s; frontend up" --execute --verbose
+
+Revert:
+kubectl -n boutique scale deployment/redis-cart --replicas=1
+
+
+5. oom_killed
+--------------
+Stage:
+kubectl -n boutique patch deployment/recommendationservice --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/resources","value":{"limits":{"memory":"10Mi"},"requests":{"memory":"10Mi"}}}]'
+
+Investigate:
+.venv/bin/sre-agent investigate boutique --workload recommendationservice --alert "recommendationservice pods restarting repeatedly, restart count climbing" --execute --verbose
+
+Revert:
+kubectl -n boutique rollout undo deployment/recommendationservice
+
+
+6. cpu_throttled  [gate will REJECT the proposed fix — verb "set" not allowlisted]
+--------------
+Stage:
+kubectl -n boutique patch deployment/checkoutservice --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/resources","value":{"limits":{"cpu":"5m"},"requests":{"cpu":"5m"}}}]'
+
+Investigate:
+.venv/bin/sre-agent investigate boutique --workload checkoutservice --alert "checkout requests succeeding but noticeably slow; latency climbing" --execute --verbose
+
+Revert:
+kubectl -n boutique rollout undo deployment/checkoutservice
+
+
+7. unschedulable
+--------------
+Stage:
+kubectl -n boutique patch deployment/paymentservice --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/resources","value":{"requests":{"cpu":"100"}}}]'
+
+Investigate:
+.venv/bin/sre-agent investigate boutique --workload paymentservice --alert "paymentservice's new pod stuck Pending, never starts" --execute --verbose
+
+Revert:
+kubectl -n boutique rollout undo deployment/paymentservice
+
+
+8. network_blocked  [gate will REJECT the proposed fix — verb "delete" not allowlisted]
+   (no --workload hint)
+--------------
+Stage:
+kubectl -n boutique apply -f infra/eval-incidents/network-blocked-policy.yaml
+
+Investigate:
+.venv/bin/sre-agent investigate boutique --alert "checkout fails at the payment step; frontend, checkout, and payment pods all look healthy" --execute --verbose
+
+Revert:
+kubectl -n boutique delete -f infra/eval-incidents/network-blocked-policy.yaml
+
+
+9. wrong_service_selector  [gate will REJECT the proposed fix — verb "patch" not allowlisted]
+--------------
+Stage:
+kubectl -n boutique patch service/frontend --type=json -p '[{"op":"replace","path":"/spec/selector","value":{"app":"frontend-broken-sre-eval"}}]'
+
+Investigate:
+.venv/bin/sre-agent investigate boutique --workload frontend --alert "frontend Service returns nothing / times out, but frontend pods show Running and Ready" --execute --verbose
+
+Revert:
+kubectl -n boutique patch service/frontend --type=json -p '[{"op":"replace","path":"/spec/selector","value":{"app":"frontend"}}]'
+
+
+10. node_down  [!] HIGHER BLAST RADIUS — drains a real node, evicts EVERY pod on
+    it, not just boutique's. Run alone, deliberately, not back-to-back with others.
+--------------
+Stage:
+kubectl cordon k3d-sre-lab-agent-1 && kubectl drain k3d-sre-lab-agent-1 --ignore-daemonsets --delete-emptydir-data --force
+
+Investigate:
+.venv/bin/sre-agent investigate boutique --alert "multiple, unrelated boutique pods restarted/rescheduled at the same time" --execute --verbose
+
+Revert:
+kubectl uncordon k3d-sre-lab-agent-1
