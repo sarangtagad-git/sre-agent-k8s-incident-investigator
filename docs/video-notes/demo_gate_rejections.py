@@ -2,7 +2,7 @@
 
 This project's venv is WSL-based, so run it from WSL, not Windows Python:
 
-    wsl.exe -e bash -lc 'cd "/mnt/d/Claude Code/SRE Agent - K8S Incident Investigator" \
+    wsl.exe -e bash -lc 'cd /path/to/repo \
         && .venv/bin/python /path/to/demo_gate_rejections.py'
 
 Or simplest for the recording: copy this file into the repo root temporarily,
