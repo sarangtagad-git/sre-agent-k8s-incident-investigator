@@ -39,6 +39,17 @@ older/simpler style) since this folder is informal and video-specific.
   `sre-agent eval --replay` (both single-incident and full-suite) so on-screen text
   matches an actual run, not a mockup.
 
+## Episode 1 thumbnails
+
+- **`thumbnails/`** — 3 thumbnail options, 1280×720, plus their editable HTML/SVG
+  sources: `ep1-thumbnail-rejected` (the "REJECTED" gate-rejection stamp — strongest
+  pure hook), `ep1-thumbnail-4-layers` (the lock chain from LLM to cluster — best if
+  the thumbnail should also explain the video's structure), `ep1-thumbnail-approved`
+  ("AI Proposed. I Approved." — most personal framing). Re-render a `.html` after
+  editing with the same headless-Edge command as the chain diagram above, swapping
+  `--window-size=1300,2100` for `--window-size=1280,720` and dropping
+  `--force-device-scale-factor` (thumbnails need exact 1280×720, not 2x).
+
 ## Cross-episode reference
 
 - **`demo-commands.txt`** — copy-paste-ready stage / investigate / revert commands for

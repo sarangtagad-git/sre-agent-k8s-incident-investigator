@@ -1,0 +1,48 @@
+<style>
+  html,body{margin:0;padding:0;background:#0D1117;}
+  svg{display:block;}
+</style>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg3" x1="0" y1="0" x2="1280" y2="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0D1117"/>
+      <stop offset="1" stop-color="#161B22"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg3)"/>
+
+  <!-- headline -->
+  <text x="60" y="120" font-family="Arial, Helvetica, sans-serif" font-size="80" font-weight="900" fill="#FFFFFF">AI PROPOSED.</text>
+  <text x="60" y="205" font-family="Arial, Helvetica, sans-serif" font-size="80" font-weight="900" fill="#22C55E">I APPROVED.</text>
+  <text x="60" y="255" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" fill="#9CA3AF">nothing runs on my cluster without me</text>
+
+  <!-- approval prompt card -->
+  <rect x="60" y="330" width="900" height="290" rx="16" fill="#161B22" stroke="#30363D" stroke-width="2"/>
+  <rect x="60" y="330" width="900" height="50" rx="16" fill="#1F2530"/>
+  <rect x="60" y="366" width="900" height="14" fill="#1F2530"/>
+  <circle cx="96" cy="355" r="9" fill="#FF5F56"/>
+  <circle cx="126" cy="355" r="9" fill="#FFBD2E"/>
+  <circle cx="156" cy="355" r="9" fill="#27C93F"/>
+
+  <text x="96" y="440" font-family="'Courier New', monospace" font-size="26" fill="#E6EDF3">Proposed remediation:</text>
+  <text x="96" y="480" font-family="'Courier New', monospace" font-size="24" font-weight="700" fill="#7CFC9A">$ kubectl rollout undo deployment/cartservice</text>
+  <text x="96" y="530" font-family="'Courier New', monospace" font-size="28" font-weight="700" fill="#F5A623">Apply this fix? [y/n]</text>
+
+  <!-- big green check stamp, rotated -->
+  <g transform="translate(760,545) rotate(-10)">
+    <circle r="70" fill="none" stroke="#22C55E" stroke-width="8"/>
+    <path d="M-32,4 L-8,30 L36,-28" fill="none" stroke="#22C55E" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- right rail: small chip -> arrow -> prompt -->
+  <g transform="translate(1120,470)">
+    <rect x="-70" y="-70" width="140" height="140" rx="20" fill="#1B2447" stroke="#3B82F6" stroke-width="5"/>
+    <circle cx="-30" cy="-30" r="8" fill="#3B82F6"/>
+    <circle cx="30" cy="-30" r="8" fill="#3B82F6"/>
+    <circle cx="-30" cy="30" r="8" fill="#3B82F6"/>
+    <circle cx="30" cy="30" r="8" fill="#3B82F6"/>
+    <text y="8" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800" fill="#3B82F6" text-anchor="middle">LLM</text>
+  </g>
+  <text x="1120" y="580" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" fill="#9CA3AF" text-anchor="middle">only ever</text>
+  <text x="1120" y="608" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" fill="#9CA3AF" text-anchor="middle">PROPOSES</text>
+</svg>
