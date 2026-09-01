@@ -1,4 +1,4 @@
-.PHONY: help install rbac kubeconfig verify-rbac test lint doctor dashboard
+.PHONY: help install rbac kubeconfig verify-rbac test lint doctor dashboard up
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n", $$1, $$2}'
@@ -31,3 +31,6 @@ doctor:  ## Verify the agent can read the cluster read-only
 
 dashboard:  ## Launch the Streamlit run-history dashboard
 	. .venv/bin/activate && streamlit run src/sre_agent/dashboard.py
+
+up:  ## Bring up k3d + Opik + Boutique port-forward + dashboard, all in parallel (WSL-side; from Windows use scripts/start-env.ps1 instead, it also handles Docker Desktop)
+	bash scripts/start-env.sh
