@@ -1,5 +1,5 @@
 # Bring up Docker Desktop (if needed), then the k3d cluster, Opik, the Boutique
-# app port-forward, and the Streamlit dashboard — the one command to run before
+# app port-forward, and the Streamlit dashboard - the one command to run before
 # a demo/recording session.
 #
 # Usage (from PowerShell, anywhere):
@@ -7,6 +7,12 @@
 #
 # Docker Desktop must be launched from Windows, so this script owns that part;
 # everything else happens in scripts/start-env.sh inside WSL, which this calls.
+#
+# NOTE: keep this file ASCII-only. Windows PowerShell 5.1 reads a .ps1 with no
+# BOM using the system ANSI codepage, not UTF-8 - a stray em-dash or curly
+# quote gets mangled into multi-byte mojibake that breaks the parser outright
+# (hit this once already: "Missing closing ')' in expression" from a single
+# em-dash inside a string literal).
 
 $ErrorActionPreference = "Stop"
 $repoWinPath = "D:\Claude Code\SRE Agent - K8S Incident Investigator"
@@ -20,7 +26,7 @@ try {
 } catch {}
 
 if (-not $dockerUp) {
-    Write-Host "  not reachable from WSL — launching Docker Desktop..."
+    Write-Host "  not reachable from WSL - launching Docker Desktop..."
     Start-Process 'C:\Program Files\Docker\Docker\Docker Desktop.exe'
     Write-Host "  waiting for it to come up (this can take a couple minutes)..."
     $ready = $false
@@ -32,7 +38,7 @@ if (-not $dockerUp) {
     }
     Write-Host ""
     if (-not $ready) {
-        Write-Host "  Docker still not reachable after 5 min. Check Docker Desktop manually (this laptop has a known issue where WSL integration silently disables itself after a restart — Settings > Resources > WSL Integration)." -ForegroundColor Yellow
+        Write-Host "  Docker still not reachable after 5 min. Check Docker Desktop manually (this laptop has a known issue where WSL integration silently disables itself after a restart - Settings > Resources > WSL Integration)." -ForegroundColor Yellow
         exit 1
     }
     Write-Host "  Docker is up." -ForegroundColor Green
