@@ -1,0 +1,220 @@
+{
+  "report": {
+    "summary": "Three separate waves of near-simultaneous restarts hit otherwise-unrelated boutique services (different codebases/resource profiles), and in each wave the affected pods were all co-located on node k3d-sre-lab-server-0. Restarted containers show generic kill signals (exit 137/143) with no in-app errors logged before death, and the node currently reports healthy with no pressure conditions — consistent with intermittent, recurring node-level resource pressure causing bulk eviction/kill of resident pods rather than any single service's bug or a downstream cascade.",
+    "root_cause": "Node k3d-sre-lab-server-0 periodically experiences resource (most likely memory) pressure, causing the kubelet to kill/evict most pods scheduled on it at once. This produces synchronized restart waves across unrelated services that happen to share that node, while pods on other nodes (e.g., shippingservice on agent-0) are unaffected by the same timing.",
+    "category": "node",
+    "confidence": "medium",
+    "confidence_score": 0.55,
+    "evidence": [
+      "Pod start_times cluster into three tight windows: 2026-08-23T04:30:32Z–04:34:33Z (adservice, cartservice, paymentservice, productcatalogservice, redis-cart), 2026-09-01T04:53:25Z–04:53:45Z (emailservice, recommendationservice), and 2026-09-05T07:00:15Z–07:00:26Z (checkoutservice, currencyservice, frontend, loadgenerator)",
+      "All pods in each wave are scheduled on k3d-sre-lab-server-0; shippingservice, the one pod on a different node (agent-0), shows a distinct restart count (4) and exit reason (255/Unknown) not aligned with the same windows",
+      "Container last_reason/last_exit_code values across the affected pods are 137 (SIGKILL) and 143 (SIGTERM) — signatures of external termination/eviction, not application-level failure",
+      "get_pod_logs(previous=true) on emailservice shows a clean startup sequence ('starting the email service in dummy mode', 'listening on port: 8080') with no in-app error before the process was cut off",
+      "get_node_status currently shows all nodes Ready with MemoryPressure=False/DiskPressure=False/PIDPressure=False — the disruption is not presently active, matching a recurring/periodic rather than constant issue",
+      "emailservice pod events show repeated 'Liveness probe failed: timeout...' warnings (19 occurrences) clustering around the restart windows, consistent with the pod being unresponsive/killed rather than reporting a code fault"
+    ],
+    "alternatives": [
+      "Each service's own low memory/cpu limits cause independent OOM-kills that coincidentally overlap in time (0.15): does not explain why unrelated services with very different memory footprints restart within the same few-minute windows repeatedly, and exit codes are inconsistent (137/143/255/2) rather than a uniform OOM signature",
+      "NetworkPolicy/DNS change blocking traffic causing probe-triggered restarts (0.1): probes target the pod's own port (not a downstream dependency), so this is a symptom of the pod being stressed/killed, not evidence of a network block; no policy was found to correlate with the timing",
+      "Bad rollout/image change causing simultaneous crash-looping (0.05): restart start_times span weeks apart (08-23, 09-01, 09-05) not one shared rollout event, deployments currently show Available/Ready with only 1 replica updated, and exit codes vary per pod inconsistent with one broken image",
+      "Scheduling failure preventing pod placement (0.02): all pods are currently Running/Ready with assigned nodes, not Pending; no placement failures observed"
+    ],
+    "impact": "Recurring multi-minute waves of simultaneous pod kills/restarts across most boutique services (ad, cart, payment, product catalog, redis-cart, email, recommendation, checkout, currency, frontend, loadgenerator), causing transient unavailability/latency spikes for checkout and browsing flows each time the node experiences pressure; three such episodes observed over ~2 weeks (08-23, 09-01, 09-05).",
+    "remediation": {
+      "action": "Inspect and increase available headroom / rebalance pods off the pressured node, and confirm via kubectl describe node whether historical OOM/eviction events correlate with the restart waves before adjusting resource requests or node capacity",
+      "command": "kubectl describe node k3d-sre-lab-server-0",
+      "rationale": "This is the safe, non-destructive next step to pull the node's current allocatable capacity, resource requests/limits totals, and any recorded eviction/OOM events, confirming the node-pressure hypothesis before recommending a capacity increase (e.g., cordon+drain to rebalance, or raising node memory) or adjusting the scheduler's pod distribution (e.g., topology spread constraints) across k3d-sre-lab-server-0 and the agent nodes.",
+      "reversible": true
+    }
+  },
+  "evidence": [
+    {
+      "tool": "get_workload_status",
+      "input": {
+        "namespace": "boutique"
+      },
+      "ok": true,
+      "summary": "12 pods, 12 deployments"
+    },
+    {
+      "tool": "get_node_status",
+      "input": {},
+      "ok": true,
+      "summary": "3 nodes, 0 not ready"
+    },
+    {
+      "tool": "get_pod_events",
+      "input": {
+        "namespace": "boutique",
+        "name": "emailservice-7c58655f4d-tdjq7"
+      },
+      "ok": true,
+      "summary": "2 events"
+    },
+    {
+      "tool": "get_pod_logs",
+      "input": {
+        "namespace": "boutique",
+        "name": "emailservice-7c58655f4d-tdjq7",
+        "previous": true
+      },
+      "ok": true,
+      "summary": "1 log lines"
+    },
+    {
+      "tool": "query_prometheus",
+      "input": {
+        "query": "sum(container_memory_working_set_bytes{namespace=\"boutique\"}) by (pod)"
+      },
+      "ok": true,
+      "summary": "request failed: [Errno 111] Connection refused"
+    },
+    {
+      "tool": "query_prometheus",
+      "input": {
+        "query": "node_memory_MemAvailable_bytes"
+      },
+      "ok": true,
+      "summary": "request failed: [Errno 111] Connection refused"
+    },
+    {
+      "tool": "get_pod_events",
+      "input": {
+        "namespace": "boutique",
+        "name": "redis-cart-857bdb46c4-jfkfv"
+      },
+      "ok": true,
+      "summary": "0 events"
+    },
+    {
+      "tool": "get_pod_events",
+      "input": {
+        "namespace": "boutique",
+        "name": "paymentservice-66f58bf8f-h2hrk"
+      },
+      "ok": true,
+      "summary": "0 events"
+    },
+    {
+      "tool": "get_pod_events",
+      "input": {
+        "namespace": "boutique",
+        "name": "adservice-947f95f9f-c8hrc"
+      },
+      "ok": true,
+      "summary": "1 events"
+    }
+  ],
+  "correlation": {
+    "timeline": [
+      {
+        "when": "2026-08-23T04:30:32Z – 04:34:33Z",
+        "what": "adservice, cartservice, paymentservice, productcatalogservice, redis-cart, and shippingservice (agent-0) all show pod start_time within a ~4 minute window, all co-located on k3d-sre-lab-server-0 except shippingservice; container last_reason/last_exit_code recorded as Error/137 (SIGKILL) or 143 (SIGTERM) across multiple unrelated services"
+      },
+      {
+        "when": "2026-09-01T04:53:25Z – 04:53:45Z",
+        "what": "emailservice and recommendationservice restart/reschedule together, again on k3d-sre-lab-server-0, exit codes 137"
+      },
+      {
+        "when": "2026-09-04T04:22:18Z – 17:55:36Z",
+        "what": "get_pod_events on emailservice shows repeated 'Liveness probe failed: timeout connecting to service' warnings (19 occurrences), consistent with the pod being unresponsive/killed around eviction windows"
+      },
+      {
+        "when": "2026-09-05T06:24:49Z",
+        "what": "get_pod_events on emailservice shows additional liveness probe timeouts ('health rpc did not complete within 1s'), continuing pattern of intermittent unresponsiveness"
+      },
+      {
+        "when": "2026-09-05T07:00:15Z – 07:00:26Z",
+        "what": "checkoutservice, currencyservice, frontend, and loadgenerator all show pod start_time within an 11-second window, again all on k3d-sre-lab-server-0 — a third simultaneous multi-service restart wave"
+      },
+      {
+        "when": "current (query time)",
+        "what": "get_node_status shows all 3 nodes Ready, no MemoryPressure/DiskPressure/PIDPressure currently — the disruption is not presently active, consistent with historical/recurring pressure events rather than an ongoing outage"
+      },
+      {
+        "when": "current (query time)",
+        "what": "get_pod_logs previous=true on emailservice shows a clean, uneventful startup sequence (dummy mode, listening on 8080) immediately terminating with no in-app error logged — the process was cut off externally (SIGKILL/SIGTERM), not a code-level crash"
+      }
+    ],
+    "dependency_chain": [],
+    "what_changed": "No image/config rollout is implicated (rollout history not needed here — restarts hit many unrelated services simultaneously rather than following a single deployment's revision change). The common factor is that nearly all affected pods share the same node, k3d-sre-lab-server-0, and their restarts cluster into tight time windows (minutes apart) recurring on 2026-08-23, 2026-09-01, and 2026-09-05. This pattern — simultaneous restarts of otherwise-unrelated workloads, all colocated on one node, with SIGKILL/SIGTERM exit codes and no per-service error logged before death — points to periodic node-level resource pressure (most likely memory) on k3d-sre-lab-server-0 triggering bulk eviction/restart of its resident pods, rather than any single service's own bug or a downstream dependency cascade.",
+    "summary": "Three discrete waves of near-simultaneous pod restarts/reschedules were observed, each affecting several unrelated boutique services (different codebases, different resource profiles) that all happen to be scheduled on the same node, k3d-sre-lab-server-0. Restarted pods show generic kill signals (exit 137/143) rather than application errors, and the one pod on a different node (shippingservice, agent-0) shows a distinct restart pattern and timing, not participating in the synchronized waves. Nodes are currently healthy/Ready with no pressure conditions, meaning the disruption is intermittent/recurring rather than a single persistent event. This is consistent with the node periodically hitting resource pressure and evicting/killing co-located pods en masse, rather than any one service crashing and cascading to others."
+  },
+  "hypotheses": [
+    {
+      "cause": "Node k3d-sre-lab-server-0 periodically experiences resource (memory) pressure, causing the kubelet to kill/evict most pods co-located on it simultaneously (bulk restarts across unrelated services in tight time windows)",
+      "category": "node",
+      "confidence": 0.55,
+      "supporting": [
+        "Pod start_times cluster into discrete waves (~2026-08-23 04:30-04:34, ~2026-09-01 04:53, ~2026-09-05 07:00) that align across unrelated services: adservice, cartservice, paymentservice, productcatalogservice, redis-cart all restarted within a 4-minute window on 08-23; checkoutservice, currencyservice, frontend, loadgenerator all restarted together on 09-05",
+        "All affected pods in each wave are scheduled on the same node (k3d-sre-lab-server-0), while shippingservice on a different node (k3d-sre-lab-agent-0) shows a different restart pattern/timing and a different exit reason (255/Unknown)",
+        "Exit codes 137 (SIGKILL) and 143 (SIGTERM) seen across multiple unrelated services are consistent with eviction/OOM-kill behavior rather than independent app bugs"
+      ],
+      "against": [
+        "get_node_status currently shows k3d-sre-lab-server-0 with MemoryPressure=False, DiskPressure=False, PIDPressure=False, Ready=True — no direct proof of pressure at the time of the incidents (events aged out, TTL ~1h)",
+        "Prometheus (which would show container_memory_working_set_bytes / node_memory_MemAvailable_bytes history) was unreachable, so no direct metric confirms memory pressure at the time of the restarts",
+        "Could alternatively be a node reboot/maintenance/drain event rather than memory pressure specifically"
+      ]
+    },
+    {
+      "cause": "Each service's own aggressively low memory/cpu limits cause independent OOM-kills/CPU starvation, coincidentally overlapping in time",
+      "category": "workload",
+      "confidence": 0.15,
+      "supporting": [
+        "Several containers have small memory limits (e.g., emailservice 128Mi, paymentservice 128Mi, cartservice 128Mi, redis-cart 256Mi) which could plausibly be OOM-killed under load",
+        "Exit code 137 (typical of OOMKill) appears on several pods (currencyservice, emailservice, paymentservice, redis-cart)"
+      ],
+      "against": [
+        "This does not explain why restarts of unrelated services with very different memory footprints and traffic patterns cluster into the same few-minute windows repeatedly — that timing correlation is the defining symptom of the incident, not something per-pod OOM limits alone would produce",
+        "Exit codes are inconsistent across the pods (137, 143, 255, 2), which argues against a uniform single-cause OOM explanation across all of them",
+        "No Prometheus data available to confirm any of these pods actually hit their memory limit (OOMKilled reason) versus being killed externally (evicted/terminated by kubelet for other reasons)"
+      ]
+    },
+    {
+      "cause": "A NetworkPolicy or DNS/networking change is blocking traffic and causing liveness/readiness probe failures that trigger restarts",
+      "category": "networking",
+      "confidence": 0.1,
+      "supporting": [
+        "adservice and paymentservice show 'Unhealthy' events: liveness/readiness probe timeouts connecting to their own health endpoints (e.g., 'failed to connect service 10.42.0.102:8080 within 1s')"
+      ],
+      "against": [
+        "Probe timeouts read as a symptom of the pod already being under stress/being killed (e.g., CPU throttled or node pressure) rather than a cause — the probe target is the pod's own port, not a downstream dependency, so this isn't evidence of a NetworkPolicy blocking cross-service traffic",
+        "No NetworkPolicy inventory was pulled to confirm any policy exists or changed recently; this hypothesis is speculative given current evidence",
+        "The restart clustering across many pods on one node is not explained by a networking policy, which would typically affect specific service-to-service paths, not indiscriminately affect all pods on a given node"
+      ]
+    },
+    {
+      "cause": "A bad rollout/image change introduced crash-looping across multiple deployments simultaneously",
+      "category": "rollout",
+      "confidence": 0.05,
+      "supporting": [
+        "Restart counts are non-zero for many deployments, which could in theory follow a bad rollout"
+      ],
+      "against": [
+        "Deployments have differing restart counts and start_times spanning weeks apart (08-23, 09-01, 09-05), not a single simultaneous rollout event across all services",
+        "get_workload_status shows deployments currently Available/Ready with only 1 replica updated — no sign of a stuck/bad rollout in progress",
+        "Restart reasons/exit codes vary per pod (137/143/255/2), inconsistent with a single shared broken image/command across many different container images"
+      ]
+    },
+    {
+      "cause": "Scheduling failure (insufficient node capacity / taints) preventing pod placement",
+      "category": "scheduling",
+      "confidence": 0.02,
+      "supporting": [
+        "None directly — included as an alternative to rule out"
+      ],
+      "against": [
+        "All pods are currently Running and Ready with assigned nodes (not Pending), so no placement failure is occurring",
+        "get_node_status shows all 3 nodes Ready and schedulable (agent-1 is cordoned/unschedulable but not hosting any affected pods)",
+        "This category requires pods stuck Pending, which is not observed here — all pods successfully restarted and are running"
+      ]
+    }
+  ],
+  "prior_incidents": [],
+  "input_tokens": 18,
+  "cache_write_tokens": 22672,
+  "cache_read_tokens": 60803,
+  "output_tokens": 9191,
+  "cost_usd": 0.2411799,
+  "duration_s": 108.11348529299721
+}
