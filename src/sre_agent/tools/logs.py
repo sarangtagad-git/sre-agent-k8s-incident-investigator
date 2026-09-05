@@ -12,7 +12,7 @@ import json
 from kubernetes.client.rest import ApiException
 
 from ..k8s import load_readonly_clients
-from ..observability import get_tracer
+from ..observability import get_tracer, truncate_for_trace as _truncate
 from .schemas import PodLogs
 
 _tracer = get_tracer()
@@ -41,6 +41,10 @@ def get_pod_logs(
         span.set_attribute("k8s.namespace", namespace)
         span.set_attribute("k8s.pod", name)
         span.set_attribute("k8s.previous", previous)
+        span.set_attribute(
+            "gen_ai.tool.call.arguments",
+            json.dumps({"namespace": namespace, "name": name, "previous": previous, "tail_lines": tail_lines}),
+        )
 
         # Resolve the container if not specified (required when a pod has several).
         if container is None:
@@ -65,7 +69,7 @@ def get_pod_logs(
 
         lines = text.splitlines() if text else []
         span.set_attribute("result.line_count", len(lines))
-        return PodLogs(
+        result = PodLogs(
             pod=name,
             namespace=namespace,
             container=container or "",
@@ -74,3 +78,5 @@ def get_pod_logs(
             lines=lines,
             note=note,
         )
+        span.set_attribute("gen_ai.tool.call.result", _truncate(result.model_dump_json()))
+        return result

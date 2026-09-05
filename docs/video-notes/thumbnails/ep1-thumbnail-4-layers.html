@@ -1,0 +1,77 @@
+<style>
+  html,body{margin:0;padding:0;background:#0A1128;}
+  svg{display:block;}
+</style>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1280" y2="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0A1128"/>
+      <stop offset="1" stop-color="#132247"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg2)"/>
+
+  <!-- giant number -->
+  <text x="60" y="330" font-family="Arial, Helvetica, sans-serif" font-size="300" font-weight="900" fill="#F5A623">4</text>
+  <text x="330" y="180" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="900" fill="#FFFFFF">SAFETY</text>
+  <text x="330" y="260" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="900" fill="#FFFFFF">LAYERS</text>
+  <text x="60" y="400" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" fill="#9FB3D9">between an LLM and your production cluster</text>
+
+  <!-- chain of 4 locks -->
+  <g font-family="Arial, Helvetica, sans-serif">
+    <!-- AI chip icon -->
+    <rect x="70" y="500" width="90" height="90" rx="14" fill="#1B2447" stroke="#3B82F6" stroke-width="4"/>
+    <circle cx="95" cy="525" r="6" fill="#3B82F6"/>
+    <circle cx="130" cy="525" r="6" fill="#3B82F6"/>
+    <circle cx="95" cy="555" r="6" fill="#3B82F6"/>
+    <circle cx="130" cy="555" r="6" fill="#3B82F6"/>
+    <text x="115" y="615" font-size="20" font-weight="800" fill="#3B82F6" text-anchor="middle">LLM</text>
+
+    <line x1="170" y1="545" x2="1050" y2="545" stroke="#3B4874" stroke-width="6" stroke-dasharray="2,14" stroke-linecap="round"/>
+
+    <!-- 4 padlocks -->
+    <g id="lockset">
+      <!-- lock 1 -->
+      <g transform="translate(280,545)">
+        <rect x="-32" y="-8" width="64" height="52" rx="8" fill="#F5A623"/>
+        <path d="M-18,-8 L-18,-30 A18,18 0 0 1 18,-30 L18,-8" fill="none" stroke="#F5A623" stroke-width="9"/>
+      </g>
+      <!-- lock 2 -->
+      <g transform="translate(500,545)">
+        <rect x="-32" y="-8" width="64" height="52" rx="8" fill="#F5A623"/>
+        <path d="M-18,-8 L-18,-30 A18,18 0 0 1 18,-30 L18,-8" fill="none" stroke="#F5A623" stroke-width="9"/>
+      </g>
+      <!-- lock 3 -->
+      <g transform="translate(720,545)">
+        <rect x="-32" y="-8" width="64" height="52" rx="8" fill="#F5A623"/>
+        <path d="M-18,-8 L-18,-30 A18,18 0 0 1 18,-30 L18,-8" fill="none" stroke="#F5A623" stroke-width="9"/>
+      </g>
+      <!-- lock 4 : human -->
+      <g transform="translate(940,545)">
+        <rect x="-32" y="-8" width="64" height="52" rx="8" fill="#22C55E"/>
+        <path d="M-18,-8 L-18,-30 A18,18 0 0 1 18,-30 L18,-8" fill="none" stroke="#22C55E" stroke-width="9"/>
+      </g>
+    </g>
+
+    <text x="280" y="625" font-size="18" font-weight="700" fill="#9FB3D9" text-anchor="middle">ALLOWLIST</text>
+    <text x="500" y="625" font-size="18" font-weight="700" fill="#9FB3D9" text-anchor="middle">DRY-RUN</text>
+    <text x="720" y="625" font-size="18" font-weight="700" fill="#9FB3D9" text-anchor="middle">HUMAN</text>
+    <text x="940" y="625" font-size="18" font-weight="700" fill="#9FB3D9" text-anchor="middle">VERIFY</text>
+
+    <!-- cluster icon (k8s-ish wheel) -->
+    <g transform="translate(1150,545)">
+      <circle r="52" fill="#182238" stroke="#3B82F6" stroke-width="5"/>
+      <circle r="10" fill="#3B82F6"/>
+      <g stroke="#3B82F6" stroke-width="7" stroke-linecap="round">
+        <line x1="0" y1="-38" x2="0" y2="-18"/>
+        <line x1="0" y1="38" x2="0" y2="18"/>
+        <line x1="-38" y1="0" x2="-18" y2="0"/>
+        <line x1="38" y1="0" x2="18" y2="0"/>
+        <line x1="-27" y1="-27" x2="-13" y2="-13"/>
+        <line x1="27" y1="27" x2="13" y2="13"/>
+        <line x1="-27" y1="27" x2="-13" y2="13"/>
+        <line x1="27" y1="-27" x2="13" y2="-13"/>
+      </g>
+    </g>
+  </g>
+</svg>

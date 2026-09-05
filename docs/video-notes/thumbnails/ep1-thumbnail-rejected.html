@@ -1,0 +1,47 @@
+<style>
+  html,body{margin:0;padding:0;background:#0B0F19;}
+  svg{display:block;}
+</style>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0B0F19"/>
+      <stop offset="1" stop-color="#161B2E"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+
+  <!-- top headline -->
+  <text x="60" y="110" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="900" fill="#FFFFFF">I GAVE AN AI</text>
+  <text x="60" y="192" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="900" fill="#FFFFFF">KUBECTL ACCESS</text>
+
+  <!-- terminal card -->
+  <rect x="60" y="250" width="800" height="330" rx="14" fill="#12151F" stroke="#2A2F45" stroke-width="2"/>
+  <rect x="60" y="250" width="800" height="46" rx="14" fill="#1B2032"/>
+  <rect x="60" y="282" width="800" height="14" fill="#1B2032"/>
+  <circle cx="92" cy="273" r="8" fill="#FF5F56"/>
+  <circle cx="118" cy="273" r="8" fill="#FFBD2E"/>
+  <circle cx="144" cy="273" r="8" fill="#27C93F"/>
+
+  <text x="90" y="345" font-family="'Courier New', monospace" font-size="30" font-weight="700" fill="#7CFC9A">$ kubectl delete pod cartservice</text>
+  <text x="90" y="395" font-family="'Courier New', monospace" font-size="26" fill="#8A93A6">allowed = False</text>
+  <text x="90" y="435" font-family="'Courier New', monospace" font-size="26" fill="#8A93A6">reason  = verb not on the allowlist</text>
+
+  <!-- big rejected stamp, rotated -->
+  <g transform="translate(650,480) rotate(-12)">
+    <rect x="-190" y="-55" width="380" height="110" rx="10" fill="none" stroke="#FF3B30" stroke-width="9"/>
+    <text x="0" y="20" font-family="Arial, Helvetica, sans-serif" font-size="64" font-weight="900" fill="#FF3B30" text-anchor="middle" letter-spacing="4">REJECTED</text>
+  </g>
+
+  <!-- right side: shield graphic -->
+  <g transform="translate(1080,400)">
+    <path d="M0,-160 L110,-115 L110,-10 C110,90 55,155 0,180 C-55,155 -110,90 -110,-10 L-110,-115 Z"
+          fill="#182238" stroke="#3B82F6" stroke-width="5"/>
+    <path d="M-45,10 L-15,45 L55,-45" fill="none" stroke="#3B82F6" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="1080" y="620" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="800" fill="#3B82F6" text-anchor="middle">SAFE BY</text>
+  <text x="1080" y="656" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="800" fill="#3B82F6" text-anchor="middle">DESIGN</text>
+
+  <!-- bottom strip -->
+  <text x="60" y="672" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="800" fill="#FFBD2E">HERE'S HOW I STOPPED IT</text>
+</svg>

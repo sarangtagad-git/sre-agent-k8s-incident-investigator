@@ -1,0 +1,240 @@
+{
+  "report": {
+    "summary": "recommendationservice pods are being OOMKilled immediately after startup following the revision 6 deployment on 2026-08-03. Both revision 6 (37 restarts, exit_code=137) and revision 7 (3+ restarts, OOMKilled) pods exhibit identical memory exhaustion patterns. Kernel terminates container for exceeding memory limit; kubelet restarts it, creating a crash loop. Liveness and readiness probes timeout as process is killed before responding. Cluster nodes are healthy with no memory pressure, and image tag unchanged between revisions, confirming the pod's memory limit is insufficient for the workload.",
+    "root_cause": "Container memory limit exceeded; kernel OOMKills the recommendationservice process, triggering an uncontrolled restart loop",
+    "category": "saturation",
+    "confidence": "high",
+    "confidence_score": 0.8,
+    "evidence": [
+      "Pod recommendationservice-649cdccf96-tr8sq status explicitly shows last_reason='OOMKilled', exit_code=137",
+      "Pod recommendationservice-58c6549c55-llfk6 from revision 6 shows 37 restarts with last_exit_code=137 (SIGKILL), same signature as revision 7",
+      "Event 2026-08-19T07:18:47Z: Liveness and readiness probes failed with 'timeout: failed to connect service 10.42.2.207:8080 within 1s: context deadline exceeded'—process unresponsive because kernel killed it for memory",
+      "Restart count climbing: revision 6 at 37 restarts since 2026-08-03T05:31:22Z, revision 7 at 3+ since 2026-08-19T07:18:44Z—classic OOMKill-and-restart loop signature",
+      "get_node_status reports MemoryPressure=False on k3d-sre-lab-agent-0 and k3d-sre-lab-agent-1—cluster has available memory, confirming pod limit is too low, not cluster exhaustion",
+      "Rollout history shows image tag v0.10.5 identical across revisions 1, 2, 3, 6, 7; ruling out binary code change as root cause",
+      "Same image v0.10.5 deployed successfully in revisions 1–3 (July 7–11) without reported restarts; memory exhaustion is new post-revision 6"
+    ],
+    "alternatives": [
+      "Revision 7 pod spec changed (resource limits, env vars, mounts modified) causing increased memory demand or reduced limit (0.65): Pod spec change confirmed in timeline but details unavailable; cannot verify if limit was reduced between revisions without manifest visibility; if limit reduced, expect immediate failure on next reconciliation, not 16-day degradation since rev 6",
+      "Application code v0.10.5 contains a memory leak accumulating until limit hit (0.4): Same image tag deployed successfully in revisions 1–3 (July 7–11) without reported restarts; if memory leak existed in v0.10.5, why was it not triggered in those earlier, stable deployments? No evidence of image retagging",
+      "Image tag v0.10.5 was retagged (pushed again) with different code containing memory leak (0.35): No image digest/hash change visible in tool outputs; would require external registry audit; speculation without verifiable evidence",
+      "Downstream dependency (database, cache, other microservice) is unavailable; recommendationservice retries/buffers, exhausting memory (0.25): Pod shows OOMKilled (direct memory limit violation), not secondary dependency failure; probe timeout is on pod's own port (10.42.2.207:8080), not downstream service; OOMKill is explicit and primary, not symptom of retry loop",
+      "Pod allocated insufficient CPU; cannot respond to liveness/readiness probes within 1s timeout; kubelet terminates after repeated failures (0.15): Exit code 137 is SIGKILL from memory, not CPU enforcement; OOMKilled is explicit in pod status, not a side-effect of probe failure termination; get_node_status shows no CPU pressure",
+      "Pod scheduled to node without sufficient available memory; crashes on startup (0.1): Pod phase is Running (scheduled successfully); if node was full, scheduler would not place pod; MemoryPressure=False on both nodes confirms available memory"
+    ],
+    "impact": "recommendationservice is unavailable in production due to persistent CrashLoopBackOff. Restart cycle began 2026-08-03 (revision 6) and continues through 2026-08-19 (revision 7). Pod has accumulated 37 restarts over 16+ days without achieving stable operation, indicating zero successful request processing during this entire period. Users cannot access recommendation functionality.",
+    "remediation": {
+      "action": "Increase memory limit for recommendationservice container",
+      "command": "kubectl patch deployment/recommendationservice -n boutique --type merge -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"server\",\"resources\":{\"limits\":{\"memory\":\"1Gi\"}}}]}}}}'",
+      "rationale": "Pod is OOMKilled immediately after startup by kernel, indicating declared memory limit is lower than required for normal operation. Cluster nodes have available memory (MemoryPressure=False), and image is unchanged from earlier revisions, confirming the workload's memory demand exceeds its current allocation. Increasing limit to 1Gi provides headroom for stable operation. This is reversible and can be tuned further if needed.",
+      "reversible": true
+    }
+  },
+  "evidence": [
+    {
+      "tool": "get_workload_status",
+      "input": {
+        "namespace": "boutique",
+        "selector": "app=recommendationservice"
+      },
+      "ok": true,
+      "summary": "2 pods, 1 deployments"
+    },
+    {
+      "tool": "get_pod_logs",
+      "input": {
+        "namespace": "boutique",
+        "name": "recommendationservice-649cdccf96-tr8sq",
+        "previous": true,
+        "tail_lines": 50
+      },
+      "ok": true,
+      "summary": "1 log lines"
+    },
+    {
+      "tool": "get_pod_events",
+      "input": {
+        "namespace": "boutique",
+        "name": "recommendationservice-649cdccf96-tr8sq"
+      },
+      "ok": true,
+      "summary": "7 events"
+    },
+    {
+      "tool": "get_pod_logs",
+      "input": {
+        "namespace": "boutique",
+        "name": "recommendationservice-649cdccf96-tr8sq",
+        "tail_lines": 50
+      },
+      "ok": true,
+      "summary": "1 log lines"
+    },
+    {
+      "tool": "get_rollout_history",
+      "input": {
+        "namespace": "boutique",
+        "deployment": "recommendationservice"
+      },
+      "ok": true,
+      "summary": "5 revisions"
+    },
+    {
+      "tool": "get_node_status",
+      "input": {},
+      "ok": true,
+      "summary": "3 nodes, 0 not ready"
+    }
+  ],
+  "correlation": {
+    "timeline": [
+      {
+        "when": "2026-08-03T05:31:17Z",
+        "what": "Revision 6 of recommendationservice deployed with image v0.10.5"
+      },
+      {
+        "when": "2026-08-03T05:31:22Z (onwards)",
+        "what": "Pod recommendationservice-58c6549c55-llfk6 from revision 6 started; now shows 37 restarts with last_exit_code=137 (SIGKILL/Error), indicating repeated crashes"
+      },
+      {
+        "when": "2026-08-19T06:49:28Z",
+        "what": "Revision 7 deployed (current); same image v0.10.5 but new ReplicaSet created, indicating non-image pod template change"
+      },
+      {
+        "when": "2026-08-19T07:18:41Z",
+        "what": "Pod recommendationservice-649cdccf96-tr8sq from revision 7 started on agent-0"
+      },
+      {
+        "when": "2026-08-19T07:18:44Z",
+        "what": "Container created and started for the new pod"
+      },
+      {
+        "when": "2026-08-19T07:18:47Z",
+        "what": "Liveness probe failed with timeout: 'failed to connect service 10.42.2.207:8080 within 1s: context deadline exceeded'; Readiness probe also failed with same timeout"
+      },
+      {
+        "when": "2026-08-19T07:18:47Z (onwards)",
+        "what": "Pod entered BackOff restarting loop; status shows last_reason=OOMKilled (exit_code=137), confirming kernel memory kill"
+      },
+      {
+        "when": "2026-08-19T07:18:47Z to 2026-08-19T07:19:27Z",
+        "what": "Container restarted 4 times in rapid succession; pod now in CrashLoopBackOff with 3+ restarts and climbing"
+      }
+    ],
+    "dependency_chain": [],
+    "what_changed": "Revision 7 rollout on 2026-08-19T06:49:28Z introduced a pod template change (not image tag) that altered memory behavior; image tag remains v0.10.5 across revisions 6 and 7, ruling out binary change but pointing to deployment spec mutation (resource limits, environment variables, or volume mounts) as the trigger.",
+    "summary": "recommendationservice pods are OOMKilled immediately after startup following revision 7 deployment. Both revision 6 (37 restarts, exit 137) and revision 7 (3+ restarts, OOMKilled) pods show identical memory exhaustion pattern. No cluster-wide memory pressure. Image tag unchanged between revisions, indicating non-binary pod spec change triggered the issue. Liveness/readiness probes timeout as process is killed by kernel before responding. Nodes are healthy (MemoryPressure=False). Root cause is memory limit exceeded; fix requires investigating what pod spec changed in revision 7 and adjusting memory limits or removing the configuration that drives memory overconsumption."
+  },
+  "hypotheses": [
+    {
+      "cause": "Container exceeds its memory limit; kernel OOMKills the process, triggering restart loop",
+      "category": "saturation",
+      "confidence": 0.8,
+      "supporting": [
+        "Pod status explicitly shows last_reason='OOMKilled' for pod 649cdccf96-tr8sq",
+        "Exit code 137 (SIGKILL) on both failing pods (58c6549c55-llfk6 and 649cdccf96-tr8sq)",
+        "Probe timeouts ('failed to connect service within 1s') are consistent with process being killed under memory pressure",
+        "Restart count climbing (37 on older pod, 3 on newer) matches behavior of OOMKill-and-restart cycle"
+      ],
+      "against": [
+        "No node-level MemoryPressure reported (get_node_status shows MemoryPressure=False on both nodes)",
+        "Same image tag v0.10.5 was deployed successfully in multiple earlier revisions (Rev 1–3 from July without issue)",
+        "Cannot determine if memory limit was actually changed between revisions without pod spec visibility"
+      ]
+    },
+    {
+      "cause": "Revision 6 or 7 pod spec changed (resource limits, env vars, or mounts added/modified) causing increased memory demand or lower limit",
+      "category": "config",
+      "confidence": 0.65,
+      "supporting": [
+        "Revision 7 rollout timestamp (2026-08-19T06:49:28Z) correlates with issue onset",
+        "Both revision 6 (2026-08-03) and revision 7 (2026-08-19) pods fail with exit code 137, while earlier revisions do not, suggesting spec divergence",
+        "Image tag is identical (v0.10.5) across all revisions, eliminating image change as cause—spec change is the only other candidate"
+      ],
+      "against": [
+        "Pod spec details not visible in available tool outputs; cannot verify what actually changed",
+        "If memory limit was reduced to sub-optimal level, expect immediate failure on next restart, not gradual degradation",
+        "No insight into whether the spec change was intentional or accidental"
+      ]
+    },
+    {
+      "cause": "Application code v0.10.5 contains a memory leak or inefficient memory allocation; accumulates memory until hitting limit",
+      "category": "workload",
+      "confidence": 0.4,
+      "supporting": [
+        "OOMKilled symptom is consistent with unbounded memory growth",
+        "Pod produces no logs before crashing (likely exits before startup logging), preventing early visibility",
+        "Both revision 6 and 7 fail identically, suggesting inherent app problem rather than infrastructure"
+      ],
+      "against": [
+        "Same v0.10.5 image was deployed successfully in revisions 1, 2, 3 (July 7–11) without reported restarts",
+        "If memory leak exists in code, why was it not triggered during earlier stable deployments?",
+        "No evidence of image being retagged; tag v0.10.5 would need to be pushed again with different code to explain this (unverifiable)"
+      ]
+    },
+    {
+      "cause": "Image tag v0.10.5 was retagged (pushed again with breaking change); newer code has memory leak or inefficiency",
+      "category": "rollout",
+      "confidence": 0.35,
+      "supporting": [
+        "Same tag name across all revisions but deployed on different dates; tag could have been overwritten with different code",
+        "OOMKilled and restart loop match memory leak or inefficiency symptom",
+        "Explains why earlier revisions with same tag were stable but later ones fail"
+      ],
+      "against": [
+        "No tooling output indicates image was retagged (image digest/hash not shown)",
+        "Speculation without verifiable evidence; requires external audit of image registry history",
+        "Kubernetes would detect and surface image hash changes if they occurred"
+      ]
+    },
+    {
+      "cause": "Downstream dependency (database, cache, or other microservice) is unavailable or slow; recommendation service retries/buffers, exhausting memory",
+      "category": "dependency",
+      "confidence": 0.25,
+      "supporting": [
+        "Probe failure messages mention 'failed to connect service'; app may be accumulating retry buffers",
+        "Liveness probe timeout could indicate hanging I/O or connection pool exhaustion"
+      ],
+      "against": [
+        "Pod status explicitly shows OOMKilled, which is a direct memory limit violation, not secondary to connectivity",
+        "Probe timeout is on the service's own port (10.42.2.207:8080), not a downstream service; indicates the pod itself is unresponsive",
+        "Expect different failure signatures for dependency issues: FailedScheduling, or service logs showing connection errors, not OOMKilled",
+        "No indication in events that a dependent service is unreachable"
+      ]
+    },
+    {
+      "cause": "Pod allocated insufficient CPU quota; cannot respond to liveness/readiness probes within 1s timeout; kubelet terminates pod after repeated probe failures",
+      "category": "saturation",
+      "confidence": 0.15,
+      "supporting": [
+        "Probe failures explicitly state 'failed to connect service within 1s: context deadline exceeded'",
+        "Process could be CPU-starved and too slow to respond, triggering probe timeout and eviction"
+      ],
+      "against": [
+        "Exit code 137 is SIGKILL from memory, not CPU enforcement; OOMKilled is explicit in pod status, not 'killed due to probe failure'",
+        "get_node_status shows no CPU pressure on any node",
+        "CPU starvation would show as pod unable to schedule or delayed scheduling, not OOMKilled crash"
+      ]
+    },
+    {
+      "cause": "Pod scheduled to node without sufficient available memory; crashes on startup when memory-demanding operation runs",
+      "category": "scheduling",
+      "confidence": 0.1,
+      "supporting": [
+        "Two pod replicas on different nodes (agent-0 and agent-1) both failing suggests node-level constraint"
+      ],
+      "against": [
+        "Pod status is Running and Ready (or in CrashLoop), not Pending; if node was full, scheduler would not place pod",
+        "get_node_status shows no MemoryPressure on either node (k3d-sre-lab-agent-0, k3d-sre-lab-agent-1)",
+        "Scheduling succeeded—the failure is after placement, not during it"
+      ]
+    }
+  ],
+  "prior_incidents": [],
+  "input_tokens": 8557,
+  "cache_write_tokens": 25512,
+  "cache_read_tokens": 4875,
+  "output_tokens": 13668,
+  "cost_usd": 0.1092745,
+  "duration_s": 139.13206400599938
+}

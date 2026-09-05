@@ -22,6 +22,9 @@ build/
 .DS_Store
 Thumbs.db
 .idea/
+~$*.xlsx
+~$*.docx
+~$*.pptx
 
 # Local editor / assistant settings (keep out of the repo)
 .claude/settings.local.json

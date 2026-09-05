@@ -101,6 +101,126 @@ def test_rejects_shell_metacharacters(cmd):
     assert "metacharacter" in d.reason
 
 
+# --- scoped `set resources` / `patch` / `delete` (extends the allowlist gap found in
+# the incident-taxonomy gate-coverage check, see docs/incident-taxonomy-plan.md) -------
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # exact commands proposed by the recorded incidents (tests/fixtures/recordings/)
+        "kubectl set resources deployment checkoutservice -c=server --limits=cpu=200m -n boutique",
+        "kubectl patch deployment/recommendationservice -n boutique --type merge "
+        '-p \'{"spec":{"template":{"spec":{"containers":[{"name":"server",'
+        '"resources":{"limits":{"memory":"1Gi"}}}]}}}}\'',
+        "kubectl patch svc frontend -n boutique -p "
+        '\'{"spec":{"selector":{"app":"frontend"}}}\'',
+        "kubectl delete networkpolicy sre-eval-block-payment -n boutique",
+    ],
+)
+def test_allows_scoped_recorded_incident_fixes(cmd):
+    d = validate_remediation(cmd)
+    assert d.allowed, d.reason
+    assert d.mutating
+
+
+def test_set_resources_rejects_non_workload_type():
+    d = validate_remediation("kubectl set resources pod x --limits=cpu=200m -n boutique")
+    assert not d.allowed
+    assert "resource type not allowed" in d.reason
+
+
+def test_set_resources_rejects_missing_limits():
+    d = validate_remediation("kubectl set resources deploy/x -n boutique")
+    assert not d.allowed
+    assert "--limits or --requests" in d.reason
+
+
+def test_set_resources_rejects_bogus_value():
+    d = validate_remediation("kubectl set resources deploy/x --limits=cpu=lots -n boutique")
+    assert not d.allowed
+    assert "invalid --limits/--requests" in d.reason
+
+
+def test_set_resources_rejects_unlisted_flag():
+    d = validate_remediation("kubectl set resources deploy/x --limits=cpu=200m --all -n boutique")
+    assert not d.allowed
+    assert "flag not allowed" in d.reason
+
+
+def test_patch_rejects_json_patch_type():
+    d = validate_remediation(
+        'kubectl patch deploy/x --type=json -p \'[{"op":"replace","path":"/spec","value":{}}]\''
+    )
+    assert not d.allowed
+    assert "json" in d.reason.lower()
+
+
+def test_patch_rejects_unsafe_field():
+    d = validate_remediation(
+        "kubectl patch deploy/x -n boutique -p "
+        '\'{"spec":{"template":{"spec":{"containers":[{"name":"server",'
+        '"image":"evil:latest"}]}}}}\''
+    )
+    assert not d.allowed
+    assert "field not allowed" in d.reason
+
+
+def test_patch_rejects_invalid_json():
+    d = validate_remediation("kubectl patch deploy/x -n boutique -p 'not json'")
+    assert not d.allowed
+    assert "not valid JSON" in d.reason
+
+
+def test_patch_rejects_unsupported_resource_type():
+    d = validate_remediation(
+        "kubectl patch secret/x -n boutique -p '{\"data\":{\"k\":\"v\"}}'"
+    )
+    assert not d.allowed
+    assert "resource type not allowed" in d.reason
+
+
+def test_patch_rejects_file_input():
+    d = validate_remediation("kubectl patch deploy/x -n boutique --patch-file=/tmp/x.yaml")
+    assert not d.allowed
+
+
+def test_delete_rejects_non_networkpolicy_type():
+    d = validate_remediation("kubectl delete deployment redis-cart -n boutique")
+    assert not d.allowed
+    assert "NetworkPolicy" in d.reason
+
+
+def test_delete_rejects_missing_name():
+    d = validate_remediation("kubectl delete networkpolicy -n boutique")
+    assert not d.allowed
+
+
+def test_delete_rejects_all_flag():
+    d = validate_remediation("kubectl delete networkpolicy --all -n boutique")
+    assert not d.allowed
+    assert "flag not allowed" in d.reason
+
+
+def test_delete_rejects_selector_bulk_delete():
+    d = validate_remediation("kubectl delete networkpolicy -l app=payment -n boutique")
+    assert not d.allowed
+    assert "flag not allowed" in d.reason
+
+
+def test_delete_rejects_multiple_names():
+    d = validate_remediation("kubectl delete networkpolicy a b -n boutique")
+    assert not d.allowed
+    assert "single resource name" in d.reason
+
+
+def test_scoped_mutating_still_respects_protected_namespace():
+    d = validate_remediation(
+        "kubectl delete networkpolicy x -n kube-system"
+    )
+    assert not d.allowed
+    assert "kube-system" in d.reason
+
+
 def test_rejects_readonly_only_command():
     # A command with no mutating action is not a remediation.
     d = validate_remediation("kubectl -n boutique get pods")

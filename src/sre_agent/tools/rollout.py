@@ -8,8 +8,10 @@ agent can answer "what changed, and when?".
 
 from __future__ import annotations
 
+import json
+
 from ..k8s import load_readonly_clients
-from ..observability import get_tracer
+from ..observability import get_tracer, truncate_for_trace as _truncate
 from .schemas import RolloutHistory, RolloutRevision
 
 _tracer = get_tracer()
@@ -37,6 +39,7 @@ def get_rollout_history(
     with _tracer.start_as_current_span("tool.get_rollout_history") as span:
         span.set_attribute("k8s.namespace", namespace)
         span.set_attribute("k8s.deployment", name)
+        span.set_attribute("gen_ai.tool.call.arguments", json.dumps({"namespace": namespace, "deployment": name}))
 
         dep = apps.read_namespaced_deployment(name, namespace)
         dep_uid = dep.metadata.uid
@@ -66,9 +69,11 @@ def get_rollout_history(
 
         revisions.sort(key=lambda r: r.revision)
         span.set_attribute("result.revision_count", len(revisions))
-        return RolloutHistory(
+        result = RolloutHistory(
             deployment=name,
             namespace=namespace,
             current_revision=current_revision,
             revisions=revisions,
         )
+        span.set_attribute("gen_ai.tool.call.result", _truncate(result.model_dump_json()))
+        return result

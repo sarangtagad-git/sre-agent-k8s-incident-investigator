@@ -1,0 +1,18 @@
+# Staged/reverted by the `network_blocked` eval incident (see evals.py).
+# Empty `ingress: []` + `policyTypes: [Ingress]` = deny ALL inbound traffic to
+# paymentservice pods. The pods themselves stay perfectly healthy (Ready, no
+# restarts) — only traffic reaching them is silently dropped. That's the point:
+# get_workload_status/get_pod_events see nothing wrong; only get_network_policies
+# (Phase-3-of-this-batch) can explain the failure.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sre-eval-block-payment
+  namespace: boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: paymentservice
+  policyTypes:
+    - Ingress
+  ingress: []

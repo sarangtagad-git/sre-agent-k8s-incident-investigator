@@ -25,15 +25,18 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 
 import anthropic
+import httpx
 from langgraph.graph import END, START, StateGraph
+from opentelemetry import trace
 from rich.console import Console
 
 from .. import history_store
 from ..config import get_settings
 from ..k8s import load_readonly_clients
-from ..observability import get_tracer
+from ..observability import get_tracer, setup_tracing, truncate_for_trace as _truncate
 from .prompts import (
     CORRELATE_INSTRUCTION,
     HYPOTHESIZE_INSTRUCTION,
@@ -52,7 +55,7 @@ from .schemas import (
     RCAReport,
     RunResult,
 )
-from .tools_bridge import ANTHROPIC_TOOLS, execute_tool
+from .tools_bridge import ANTHROPIC_TOOLS, OPENAI_TOOLS, execute_tool
 
 _tracer = get_tracer()
 
@@ -99,6 +102,144 @@ def _compact_schema(model_cls) -> str:
         return schema.get("type", "any")
 
     return json.dumps(resolve(full))
+
+
+def _btype(b) -> str:
+    """Read `.type` off a gather content block, which is either a plain dict (open
+    model, gather-model-swap) or an Anthropic SDK content-block object (Claude)."""
+    return b["type"] if isinstance(b, dict) else b.type
+
+
+def _bget(b, key, default=None):
+    return b.get(key, default) if isinstance(b, dict) else getattr(b, key, default)
+
+
+
+
+def _response_output(blocks) -> str:
+    """Render a response's content blocks as a compact string for tracing — the actual
+    text plus a summary of any tool calls, since for gather 'what did it decide to do'
+    often IS the tool calls, not prose. Reuses _btype/_bget so it handles both Claude
+    SDK objects and the open-model gather path's plain dicts uniformly."""
+    parts = []
+    for b in blocks:
+        t = _btype(b)
+        if t == "text" and (_bget(b, "text") or "").strip():
+            parts.append(_bget(b, "text").strip())
+        elif t == "tool_use":
+            args = dict(_bget(b, "input") or {})
+            parts.append(f"[tool_call: {_bget(b, 'name')}({', '.join(f'{k}={v}' for k, v in args.items())})]")
+    return _truncate("\n".join(parts))
+
+
+def _last_message_summary(messages: list) -> str:
+    """Compact rendering of the newest message for tracing 'input' — the initial
+    incident render (a plain string) on gather's first call, or the tool results that
+    triggered this call on later ones. Deliberately NOT the full transcript, which
+    would repeat the same growing content across every span in a multi-round loop."""
+    if not messages:
+        return ""
+    content = messages[-1].get("content")
+    if isinstance(content, str):
+        return _truncate(content)
+    if isinstance(content, list):
+        parts = [
+            f"[{_bget(b, 'tool_use_id', '')}] {_bget(b, 'content', '')}"
+            for b in content
+            if _btype(b) == "tool_result"
+        ]
+        return _truncate("\n".join(parts)) if parts else _truncate(str(content))
+    return _truncate(str(content))
+
+
+def _messages_to_openai(system_prompt: str, messages: list) -> list[dict]:
+    """Translate the Anthropic-shaped gather transcript into OpenAI chat format for
+    the swapped-in gather model. Only ever called on a transcript gather itself
+    built (plain dicts — see _openai_message_to_blocks below), since gather never
+    mixes in real Claude SDK content-block objects when gather_model is set."""
+    oai: list[dict] = [{"role": "system", "content": system_prompt}]
+    for m in messages:
+        role, content = m["role"], m["content"]
+        if isinstance(content, str):
+            oai.append({"role": role, "content": content})
+        elif role == "assistant":
+            text = "".join(b["text"] for b in content if b["type"] == "text")
+            tool_calls = [
+                {
+                    "id": b["id"],
+                    "type": "function",
+                    "function": {"name": b["name"], "arguments": json.dumps(b["input"])},
+                }
+                for b in content
+                if b["type"] == "tool_use"
+            ]
+            entry: dict = {"role": "assistant", "content": text or None}
+            if tool_calls:
+                entry["tool_calls"] = tool_calls
+            oai.append(entry)
+        else:  # a user turn carrying tool_result blocks
+            for b in content:
+                oai.append({"role": "tool", "tool_call_id": b["tool_use_id"], "content": b["content"]})
+    return oai
+
+
+def _openai_message_to_blocks(message: dict) -> list[dict]:
+    """The inverse: one OpenAI-shaped response message -> Anthropic content blocks,
+    so the rest of the pipeline (still Claude) sees the same transcript shape no
+    matter which model produced this turn. Deliberately never emits a "thinking"
+    block: Anthropic requires a signed signature on any thinking block replayed
+    back while thinking is enabled (correlate/hypothesize/propose all run with it
+    on), and an open model has no way to produce that signature.
+
+    Also never reuses the provider's own tool_call id verbatim — live-verified:
+    Qwen's ids happen to be plain alphanumeric and pass, but Kimi K2 returns ids
+    like "functions.get_workload_status:0" (dots/colons), which Claude's
+    tool_use.id validation rejects on replay. Mint our own safe id instead;
+    _messages_to_openai() derives both the tool_calls[].id and the matching
+    tool role message's tool_call_id from this same synthetic value, so the
+    provider's original id never has to survive the round trip."""
+    blocks = []
+    text = message.get("content")
+    if text:
+        blocks.append({"type": "text", "text": text})
+    for tc in message.get("tool_calls") or []:
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": f"toolu_{uuid.uuid4().hex}",
+                "name": tc["function"]["name"],
+                "input": json.loads(tc["function"]["arguments"] or "{}"),
+            }
+        )
+    return blocks
+
+
+def _gather_call_open_model(settings, messages: list) -> tuple[dict, dict]:
+    """One gather iteration against the swapped-in open model, over its
+    OpenAI-compatible endpoint (works for OpenRouter/DeepInfra/DeepSeek/Groq/etc.
+    unchanged — only base_url/model/api_key differ). Returns (message, usage)."""
+    resp = httpx.post(
+        f"{settings.gather_base_url.rstrip('/')}/chat/completions",
+        headers={"Authorization": f"Bearer {settings.gather_api_key}"},
+        json={
+            "model": settings.gather_model,
+            "messages": _messages_to_openai(SYSTEM_PROMPT, messages),
+            "tools": OPENAI_TOOLS,
+            "tool_choice": "auto",
+            "max_tokens": 8000,
+        },
+        timeout=90,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"], data.get("usage") or {}
+
+
+def _estimate_gather_cost(gather_totals: dict, settings) -> float:
+    return (
+        gather_totals["input"] * settings.gather_price_in
+        + gather_totals["output"] * settings.gather_price_out
+    ) / 1e6
 
 
 def _hypotheses_for_report(ranked: list[Hypothesis]) -> str:
@@ -171,9 +312,29 @@ def _row_to_prior_incident(row) -> PriorIncident:
     )
 
 
-def _build_graph(client, clients, settings, verbose=False, console=None):
+def _reasoning_kwargs(model: str, effort: str, verbose: bool) -> dict:
+    """Kwargs controlling reasoning depth, branched by model capability — the API gives
+    no capability-negotiation, so this is a hardcoded model-name check, live-verified
+    2026-08-19 (a `sre-agent eval --record` batch on Haiku failed every single incident
+    with BadRequestError: "adaptive thinking is not supported on this model"):
+
+    - Opus 4.7+ and the Claude 5 models (incl. our default, Sonnet 5) accept ONLY
+      adaptive thinking (thinking.type="adaptive" + output_config.effort) — the older
+      fixed-budget thinking API is rejected outright on these.
+    - Haiku 4.5 is the reverse: it accepts ONLY the older fixed-budget thinking
+      (thinking.type="enabled" + budget_tokens) and has no output_config.effort at all.
+
+    If a future Haiku gains adaptive support, this is the one place to update.
+    """
+    if "haiku" in model.lower():
+        return {"thinking": {"type": "enabled", "budget_tokens": 4000}}
     # display=summarized surfaces Claude's reasoning summary (billed either way — free to show)
     thinking = {"type": "adaptive", "display": "summarized"} if verbose else {"type": "adaptive"}
+    return {"thinking": thinking, "output_config": {"effort": effort}}
+
+
+def _build_graph(client, clients, settings, verbose=False, console=None):
+    reasoning_kwargs = _reasoning_kwargs(settings.agent_model, settings.agent_effort, verbose)
 
     def say(msg, style=""):
         if console:
@@ -181,6 +342,20 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
 
     # Accumulate token usage across every model call in the run.
     totals = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+    # Separate accumulator for the swapped-in gather model (gather_model set): its
+    # usage shape (prompt_tokens/completion_tokens, no cache breakdown) and pricing
+    # are unrelated to Claude's, so it's tracked and priced independently, then
+    # folded into one total in investigate().
+    gather_totals = {"input": 0, "output": 0}
+
+    def track_gather(usage: dict) -> None:
+        if not usage:
+            return
+        inp = usage.get("prompt_tokens", 0) or 0
+        out = usage.get("completion_tokens", 0) or 0
+        gather_totals["input"] += inp
+        gather_totals["output"] += out
+        say(f"     [dim]gather-model tokens: in={inp}  out={out}[/]")
 
     def track(usage) -> None:
         if usage is None:
@@ -207,16 +382,26 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
             model=settings.agent_model,
             max_tokens=8000,
             system=SYSTEM_PROMPT,
-            thinking=thinking,
-            output_config={"effort": settings.agent_effort},
             tools=ANTHROPIC_TOOLS,
             messages=messages + [{"role": "user", "content": ask}],
             cache_control={"type": "ephemeral"},
+            **reasoning_kwargs,
         )
         if force_no_tools:
             kwargs["tool_choice"] = {"type": "none"}
         resp = client.messages.create(**kwargs)
         track(resp.usage)
+        # GenAI semantic-convention attributes on whichever node span is active
+        # (agent.correlate/hypothesize/rank/propose) — this is what makes Opik/
+        # Langfuse render the call as an LLM span (cost, tokens) rather than a
+        # blank one. Always Claude here, unlike gather's swapped path below.
+        span = trace.get_current_span()
+        span.set_attribute("gen_ai.system", "anthropic")
+        span.set_attribute("gen_ai.request.model", settings.agent_model)
+        span.set_attribute("gen_ai.usage.input_tokens", resp.usage.input_tokens or 0)
+        span.set_attribute("gen_ai.usage.output_tokens", resp.usage.output_tokens or 0)
+        span.set_attribute("gen_ai.input.messages", _truncate(ask))
+        span.set_attribute("gen_ai.output.messages", _response_output(resp.content))
         return resp
 
     def _extract_json_object(text: str) -> dict:
@@ -250,56 +435,112 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
             return model_cls.model_validate(_extract_json_object(text))
 
     def gather(state: AgentState) -> dict:
-        with _tracer.start_as_current_span("agent.gather"):
+        with _tracer.start_as_current_span("agent.gather") as gather_span:
             messages = state["messages"]
             evidence = state["evidence"]
             iterations = state["iterations"]
-            say("\n[bold cyan]▶ gather[/] — investigating with read-only tools")
+            swapped = bool(settings.gather_model)
+            # gen_ai.request./gen_ai.response* are the two Opik mapping rules that route
+            # to Input/Output WITHOUT forcing spanType=llm or =tool (unlike gen_ai.input.*/
+            # gen_ai.tool.*, which do) — the right choice for a phase-wrapper span that
+            # isn't itself one call. See GenAIMappingRules.java in the Opik repo.
+            gather_span.set_attribute("gen_ai.request.incident", _truncate(_last_message_summary(messages)))
+            say(
+                "\n[bold cyan]▶ gather[/] — investigating with read-only tools"
+                + (f" [dim](gather model: {settings.gather_model})[/]" if swapped else "")
+            )
 
             while iterations < settings.agent_max_tool_iterations:
-                resp = client.messages.create(
-                    model=settings.agent_model,
-                    max_tokens=16000,
-                    system=SYSTEM_PROMPT,
-                    thinking=thinking,
-                    output_config={"effort": settings.agent_effort},
-                    tools=ANTHROPIC_TOOLS,
-                    messages=messages,
-                    cache_control={"type": "ephemeral"},  # cache the stable prefix -> cheaper
-                )
+                # Each iteration gets its own child span (rather than piling everything
+                # onto the single "agent.gather" span above) so a multi-round-trip
+                # gather phase shows up in Opik/Langfuse as N separate LLM calls with
+                # their own cost/latency, not one call with N calls' worth of tokens.
+                if swapped:
+                    # Open-model path (gather-model-swap): same loop shape, but the
+                    # call and its response go through the OpenAI<->Anthropic
+                    # translation layer above so `messages` stays a valid Anthropic
+                    # transcript for correlate/hypothesize/propose, which always
+                    # stay on Claude regardless of this setting.
+                    with _tracer.start_as_current_span("agent.gather.call") as call_span:
+                        call_span.set_attribute("gen_ai.input.messages", _last_message_summary(messages))
+                        msg, usage = _gather_call_open_model(settings, messages)
+                        blocks = _openai_message_to_blocks(msg)
+                        call_span.set_attribute("gen_ai.system", "openai")  # OpenAI-compatible wire format
+                        call_span.set_attribute("gen_ai.request.model", settings.gather_model)
+                        call_span.set_attribute("gen_ai.usage.input_tokens", usage.get("prompt_tokens", 0) or 0)
+                        call_span.set_attribute("gen_ai.usage.output_tokens", usage.get("completion_tokens", 0) or 0)
+                        call_span.set_attribute("gen_ai.output.messages", _response_output(blocks))
+                    keep_going = bool(msg.get("tool_calls"))
+                    track_gather(usage)
+                else:
+                    with _tracer.start_as_current_span("agent.gather.call") as call_span:
+                        call_span.set_attribute("gen_ai.input.messages", _last_message_summary(messages))
+                        resp = client.messages.create(
+                            model=settings.agent_model,
+                            max_tokens=16000,
+                            system=SYSTEM_PROMPT,
+                            tools=ANTHROPIC_TOOLS,
+                            messages=messages,
+                            cache_control={"type": "ephemeral"},  # cache the stable prefix -> cheaper
+                            **reasoning_kwargs,
+                        )
+                        blocks = resp.content
+                        call_span.set_attribute("gen_ai.system", "anthropic")
+                        call_span.set_attribute("gen_ai.request.model", settings.agent_model)
+                        call_span.set_attribute("gen_ai.usage.input_tokens", resp.usage.input_tokens or 0)
+                        call_span.set_attribute("gen_ai.usage.output_tokens", resp.usage.output_tokens or 0)
+                        call_span.set_attribute("gen_ai.output.messages", _response_output(blocks))
+                    keep_going = resp.stop_reason == "tool_use"
+                    track(resp.usage)
+
                 iterations += 1
-                messages.append({"role": "assistant", "content": resp.content})
-                track(resp.usage)
+                messages.append({"role": "assistant", "content": blocks})
 
                 if console:
-                    for block in resp.content:
-                        if block.type == "thinking" and getattr(block, "thinking", "").strip():
-                            say(f"  [dim italic]🧠 {block.thinking.strip()}[/]")
-                        elif block.type == "text" and block.text.strip():
-                            say(f"  [white]{block.text.strip()}[/]")
+                    for block in blocks:
+                        btype = _btype(block)
+                        if btype == "thinking" and (_bget(block, "thinking") or "").strip():
+                            say(f"  [dim italic]🧠 {_bget(block, 'thinking').strip()}[/]")
+                        elif btype == "text" and (_bget(block, "text") or "").strip():
+                            say(f"  [white]{_bget(block, 'text').strip()}[/]")
 
-                if resp.stop_reason != "tool_use":
+                if not keep_going:
                     break
 
                 tool_results = []
-                for block in resp.content:
-                    if block.type == "tool_use":
-                        args = ", ".join(f"{k}={v}" for k, v in dict(block.input).items())
-                        say(f"  [yellow]🔧 {block.name}[/]([dim]{args}[/])")
-                        content, is_error, record = execute_tool(block.name, dict(block.input), clients)
+                for block in blocks:
+                    if _btype(block) == "tool_use":
+                        name = _bget(block, "name")
+                        tool_input = dict(_bget(block, "input"))
+                        tool_id = _bget(block, "id")
+                        args = ", ".join(f"{k}={v}" for k, v in tool_input.items())
+                        say(f"  [yellow]🔧 {name}[/]([dim]{args}[/])")
+                        content, is_error, record = execute_tool(name, tool_input, clients)
                         evidence.append(record)
                         mark = "[red]✗[/]" if is_error else "[green]✓[/]"
                         say(f"     {mark} [dim]{record.summary}[/]")
                         tool_results.append(
                             {
                                 "type": "tool_result",
-                                "tool_use_id": block.id,
+                                "tool_use_id": tool_id,
                                 "content": content,
                                 "is_error": is_error,
                             }
                         )
                 messages.append({"role": "user", "content": tool_results})
 
+            gather_span.set_attribute("gather.iterations", iterations)
+            gather_span.set_attribute("gather.tool_calls", len(evidence))
+            gather_span.set_attribute(
+                "gather.tools_used", _truncate(json.dumps(sorted({e.tool for e in evidence})))
+            )
+            gather_span.set_attribute(
+                "gen_ai.response.summary",
+                _truncate(
+                    f"{iterations} iterations, {len(evidence)} tool calls "
+                    f"({', '.join(sorted({e.tool for e in evidence})) or 'none'})"
+                ),
+            )
             return {"messages": messages, "evidence": evidence, "iterations": iterations}
 
     def recall(state: AgentState) -> dict:
@@ -307,12 +548,30 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
         # gather (evidence-gathering stays memory-blind by design) and is skipped
         # entirely for eval-mode incidents so the harness stays a cold regression
         # test — see docs/memory-plan.md decisions 1/2/4.
-        with _tracer.start_as_current_span("agent.recall"):
+        with _tracer.start_as_current_span("agent.recall") as span:
             incident = state["incident"]
+            span.set_attribute("recall.workload", incident.workload or "")
+            span.set_attribute("recall.skipped", incident.skip_recall)
+            span.set_attribute(
+                "gen_ai.request.lookup",
+                json.dumps({"namespace": incident.namespace, "workload": incident.workload}),
+            )
             if incident.skip_recall:
+                span.set_attribute("recall.prior_incident_count", 0)
+                span.set_attribute("gen_ai.response.summary", "skipped (eval-mode incident stays memory-blind)")
                 return {"prior_incidents": []}
             rows = history_store.find_related_runs(incident.namespace, incident.workload, limit=3)
             prior = [_row_to_prior_incident(r) for r in rows]
+            span.set_attribute("recall.prior_incident_count", len(prior))
+            span.set_attribute(
+                "gen_ai.response.summary",
+                _truncate(
+                    f"{len(prior)} prior incident(s): "
+                    + "; ".join(f"{p.category} ({p.outcome_label})" for p in prior)
+                    if prior
+                    else "0 prior incidents found"
+                ),
+            )
             if console and prior:
                 say(f"\n[bold cyan]▶ recall[/] — {len(prior)} related past incident(s)")
                 for p in prior:
@@ -347,14 +606,31 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
 
     def rank(state: AgentState) -> dict:
         # Deterministic, no LLM call: order hypotheses by confidence, most-likely first.
-        with _tracer.start_as_current_span("agent.rank"):
-            ranked = sorted(state["hypotheses"], key=lambda h: h.confidence, reverse=True)
+        with _tracer.start_as_current_span("agent.rank") as span:
+            hyps = state["hypotheses"]
+            span.set_attribute(
+                "rank.input_hypotheses", _truncate(json.dumps([h.cause for h in hyps]))
+            )
+            span.set_attribute(
+                "gen_ai.request.hypotheses",
+                _truncate(json.dumps([{"cause": h.cause, "confidence": h.confidence} for h in hyps])),
+            )
+            ranked = sorted(hyps, key=lambda h: h.confidence, reverse=True)
             if ranked:
                 top = ranked[0]
+                span.set_attribute("rank.top_cause", top.cause)
+                span.set_attribute("rank.top_category", top.category or "")
+                span.set_attribute("rank.top_confidence", top.confidence)
+                span.set_attribute(
+                    "gen_ai.response.summary",
+                    _truncate(f"top: {top.category} — {top.cause} (confidence {top.confidence:.2f})"),
+                )
                 say(
                     f"\n[bold cyan]▶ rank[/] — top: [white]{top.cause}[/] "
                     f"[dim](confidence {top.confidence:.2f})[/]"
                 )
+            else:
+                span.set_attribute("gen_ai.response.summary", "no hypotheses to rank")
             return {"hypotheses": ranked}
 
     def propose(state: AgentState) -> dict:
@@ -372,7 +648,7 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
 
             if console:
                 price_in, _ = _price_for(settings.agent_model)
-                est = _estimate_cost(totals, settings.agent_model)
+                claude_est = _estimate_cost(totals, settings.agent_model)
                 saved = totals["cache_read"] * 0.90 * price_in / 1e6  # vs paying full price
                 say(
                     f"\n[bold]run totals[/] — input={totals['input']}  "
@@ -380,9 +656,17 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
                     f"output={totals['output']}"
                 )
                 say(
-                    f"[bold]est. cost[/] ~${est:.4f}  "
-                    f"[dim](approx, {settings.agent_model}; caching saved ~${saved:.4f})[/]"
+                    f"[bold]est. cost[/] (Claude, {settings.agent_model}) ~${claude_est:.4f}  "
+                    f"[dim](caching saved ~${saved:.4f})[/]"
                 )
+                if settings.gather_model:
+                    gather_est = _estimate_gather_cost(gather_totals, settings)
+                    say(
+                        f"[bold]est. cost[/] (gather model, {settings.gather_model}) "
+                        f"~${gather_est:.4f}  [dim](in={gather_totals['input']} "
+                        f"out={gather_totals['output']})[/]"
+                    )
+                    say(f"[bold]est. total[/] ~${claude_est + gather_est:.4f}")
             return {"report": report}
 
     g = StateGraph(AgentState)
@@ -399,7 +683,7 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
     g.add_edge("hypothesize", "rank")
     g.add_edge("rank", "propose")
     g.add_edge("propose", END)
-    return g.compile(), totals
+    return g.compile(), totals, gather_totals
 
 
 def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
@@ -410,6 +694,12 @@ def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set (copy .env.example -> .env and add it).")
+    if settings.gather_model and not settings.gather_api_key:
+        raise RuntimeError("GATHER_MODEL is set but GATHER_API_KEY is not (see .env.example).")
+
+    # No-op unless OPIK_URL / LANGFUSE_URL are set — see observability.py. Idempotent,
+    # so repeated investigate() calls in one process (e.g. `sre-agent eval`) are fine.
+    setup_tracing(settings=settings)
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     clients = load_readonly_clients()
@@ -418,7 +708,15 @@ def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
     start = time.perf_counter()
     with _tracer.start_as_current_span("agent.investigate") as span:
         span.set_attribute("incident.namespace", incident.namespace)
-        app, totals = _build_graph(client, clients, settings, verbose=verbose, console=console)
+        span.set_attribute("incident.workload", incident.workload or "")
+        span.set_attribute("incident.alert", incident.alert or "")
+        span.set_attribute(
+            "gen_ai.request.incident",
+            json.dumps(
+                {"namespace": incident.namespace, "workload": incident.workload, "alert": incident.alert}
+            ),
+        )
+        app, totals, gather_totals = _build_graph(client, clients, settings, verbose=verbose, console=console)
         initial: AgentState = {
             "incident": incident,
             "messages": [{"role": "user", "content": render_incident(incident)}],
@@ -431,6 +729,19 @@ def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
         }
         final = app.invoke(initial)
         span.set_attribute("agent.iterations", final["iterations"])
+        report = final["report"]
+        if report is not None:
+            span.set_attribute("investigate.report_category", report.category)
+            span.set_attribute("investigate.report_confidence", report.confidence_score)
+            span.set_attribute("investigate.report_summary", _truncate(report.summary))
+            span.set_attribute("investigate.remediation_command", _truncate(report.remediation.command))
+            span.set_attribute(
+                "gen_ai.response.summary",
+                _truncate(
+                    f"[{report.category}, confidence {report.confidence_score:.2f}] {report.summary}\n"
+                    f"remediation: {report.remediation.command}"
+                ),
+            )
         return RunResult(
             report=final["report"],
             evidence=final["evidence"],
@@ -441,6 +752,7 @@ def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
             cache_write_tokens=totals["cache_write"],
             cache_read_tokens=totals["cache_read"],
             output_tokens=totals["output"],
-            cost_usd=_estimate_cost(totals, settings.agent_model),
+            cost_usd=_estimate_cost(totals, settings.agent_model)
+            + _estimate_gather_cost(gather_totals, settings),
             duration_s=time.perf_counter() - start,
         )
