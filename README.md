@@ -40,8 +40,9 @@ healthy for several consecutive checks, not just until `kubectl apply` exits 0.
   caching bug that made analysis 50% *more* expensive was found and fixed by reading the
   numbers, not by guessing. The dashboard's Analytics view shows cache-hit meters and
   cost-per-investigation bars across all runs.
-- **Observe the observer** — OpenTelemetry spans are wired in from day one so tracing has
-  somewhere to plug in as the project grows (not yet exported anywhere — see Known gaps).
+- **Observe the observer** — OpenTelemetry spans on every node, tool call, and LLM call,
+  exported to a self-hosted Opik instance: every reasoning step, tool call, and token
+  count for any past run is inspectable end to end, not just the final RCA.
 - **Memory that informs, never inflates** — the agent recalls this workload's own past
   incidents, but the digest is text for the LLM to weigh, never a code-side confidence
   bump; the cluster is always checked fresh *before* the past is allowed to influence
@@ -90,7 +91,11 @@ Diagrams (in [`docs/architecture/`](docs/architecture/) — click to view):
 ## Local stack
 - **Cluster:** k3d / k3s (`sre-lab`) — see [`infra/k3d/`](infra/k3d/). (k3d not kind because
   the dev disk is a slow HDD; k3s's SQLite datastore tolerates it — see the build log below.)
-- **Observability:** kube-prometheus-stack — see [`infra/observability/`](infra/observability/).
+- **Observability:** kube-prometheus-stack (cluster metrics) — see
+  [`infra/observability/`](infra/observability/) — plus a self-hosted
+  [Opik](https://github.com/comet-ml/opik) instance (agent tracing), run via its own
+  `docker compose`, external to this repo; `scripts/start-env.sh` brings it up alongside
+  everything else.
 - **Demo app ("patient"):** Google Online Boutique — see [`infra/apps/online-boutique/`](infra/apps/online-boutique/).
 - **Agent:** Python + LangGraph + Claude + read-only Kubernetes/Prometheus tools — [`src/sre_agent/`](src/sre_agent/).
 
@@ -107,29 +112,51 @@ Diagrams (in [`docs/architecture/`](docs/architecture/) — click to view):
 - [x] **9 · Alert-triggered investigations** — Alertmanager → webhook listener → guardrails → autonomous propose-only run; live-demoed end to end
 - [x] **10 · Incident memory** — a `recall` node feeds this workload's own past incidents into the RCA, text-only, cluster-checked-fresh-first, eval-isolated; two rounds of live calibration testing (over-trust, then under-use) hardened the prompt
 - [x] **11 · Applied-fix verification** — after a human-approved apply, poll for consecutive healthy checks before calling it resolved; the verdict feeds back into memory honestly
+- [x] **Eval taxonomy expansion** — 3 → 10 scripted incident classes (adds OOM, CPU
+  throttling, unschedulable, bad config, NetworkPolicy block, wrong Service selector,
+  node down), 3 new read-only tools (`get_network_policies`/`get_service_status`/
+  `get_node_status`), and a record/replay mechanism so checks tune against a saved run
+  instead of the live API
+- [x] **Gate coverage** — extended `validate_remediation`'s allowlist with scoped,
+  content-inspected `set resources`/`patch`/`delete` validators, closing a real gap where
+  4 of 9 correctly-diagnosed fixes were rejected on verb alone; 9/9 pass now
+- [x] **Tracing** — self-hosted Opik captures every LLM call, tool call, and reasoning
+  span end to end (see "Observe the observer" above)
+- [x] **One-command dev environment** — `make up` brings up the cluster, Opik, the
+  Boutique port-forward, and the dashboard together, polling until all three are ready
 - [ ] Demo video + this write-up finalized
 
-_Cross-cutting from day 1: OpenTelemetry spans on every node/tool call (not yet exported anywhere)._
+_Cross-cutting from day 1: OpenTelemetry spans on every node/tool call, exported to a
+self-hosted Opik instance (`docker compose --profile opik up -d`, wired into `make up`)._
 
 ## Repository layout
 ```
 infra/           k3d cluster · kube-prometheus-stack (+ boutique alert rules & the
                  sre-agent Alertmanager route) · Online Boutique · read-only RBAC
 src/sre_agent/
-  tools/         the 5 read-only evidence tools (+ Pydantic schemas)
-  agent/         LangGraph graph, tool bridge, prompts, state/RCA schemas
-  remediation.py the Phase 5 allowlist validator + dry-run/apply gate, plus the Phase 11
+  tools/         8 read-only evidence tools (workload · events · logs · rollout ·
+                 PromQL · network policies · service status · node status) + Pydantic schemas
+  agent/         LangGraph graph, tool bridge, prompts, state/RCA schemas; the optional
+                 open-model gather swap lives here too (dormant unless GATHER_MODEL is set)
+  remediation.py the Phase 5 allowlist validator + dry-run/apply gate (scoped `set
+                 resources`/`patch`/`delete` validators included), plus the Phase 11
                  consecutive-healthy-checks recovery verifier
-  evals.py       the 3 scripted incidents (stage/revert/ground-truth) + scoring
+  evals.py       the 10 scripted incidents (stage/revert/ground-truth) + scoring
+  eval_recording.py  save/replay a run so check-tuning is free after the first (paid) one
   history_store.py  SQLite persistence for every run (data/history.db, git-ignored),
                  including recalled prior incidents and verification outcomes
   dashboard.py   the Streamlit dashboard (incident feed · detail pages · analytics)
   alerts.py      Alertmanager payload models + the pure trigger policy (Phase 9)
   listener.py    the webhook listener behind `sre-agent listen`
   cli.py         status · events · logs · rollout · metrics · investigate · eval · history · listen
+scripts/         one-command dev-env startup — start-env.ps1 (Windows entrypoint,
+                 launches Docker Desktop if needed) -> start-env.sh (WSL: cluster, Opik,
+                 port-forward, dashboard, in parallel); also `make up`
 tests/           unit + live-cluster integration tests (auto-skip when offline)
+tests/fixtures/recordings/  one saved real run per incident, for free `--replay` scoring
 evals/README.md  how to run the eval harness (specs live in src/sre_agent/evals.py)
-docs/            architecture diagrams · dashboard-plan.md · alerts-plan.md
+docs/            architecture diagrams · dashboard-plan.md · alerts-plan.md ·
+                 incident-taxonomy-plan.md (the 10-incident build log)
 ```
 
 ## Quickstart (Phase 1)
@@ -150,6 +177,9 @@ make install && make test
 cp .env.example .env      # add your ANTHROPIC_API_KEY later
 make doctor
 ```
+Already have the cluster built and just restarted your machine? `make up` (or
+[`scripts/start-env.ps1`](scripts/start-env.ps1) from Windows) brings the cluster, Opik,
+the Boutique port-forward, and the dashboard up together and waits until all three answer.
 
 ## Usage
 Each read-only tool is also a CLI command (great for driving the cluster by hand):
@@ -173,8 +203,10 @@ sre-agent investigate boutique -w redis-cart -x
 ```
 Regression-test the agent against ground truth (mutates the cluster, costs real money, always reverts):
 ```bash
-sre-agent eval                 # all 3 scripted incidents
-sre-agent eval -i cascade -y   # just one, skip the confirmation
+sre-agent eval                        # all 10 scripted incidents
+sre-agent eval -i cascade -y          # just one, skip the confirmation
+sre-agent eval -i cascade --record    # save the run for free replay later
+sre-agent eval -i cascade --replay    # re-score the saved run — no API call, no cluster changes
 ```
 Browse what the agent has done — every run is persisted:
 ```bash
@@ -197,14 +229,28 @@ daily run cap before a cent is spent; every decline is logged with its reason, a
 resulting incidents show up in the dashboard with an "auto" badge.
 
 ## Incidents proven live
-| Incident | Category | Confidence | Cost / run* |
-|---|---|---|---|
-| ImagePullBackOff (bad image tag, currencyservice) | rollout | 0.95 | ~$0.12 |
-| CrashLoopBackOff (bad command → `ModuleNotFoundError`, emailservice) | rollout | 0.85 | ~$0.16 |
-| Dependency cascade (redis-cart scaled to 0, no workload hint given) | dependency | 0.85 | ~$0.16 |
+All 10 are real `sre-agent eval --record` runs against the actual cluster — not mocked
+examples — each with its own ground-truth check in [`evals.py`](src/sre_agent/evals.py)
+and a saved recording in [`tests/fixtures/recordings/`](tests/fixtures/recordings/) for
+free `--replay` scoring. See [`docs/incident-taxonomy-plan.md`](docs/incident-taxonomy-plan.md)
+for how each one was built.
 
-\* claude-sonnet-5, `AGENT_EFFORT=medium`, after the caching fix below. Each row above is a
-live `sre-agent eval` run, not a mocked example — see [`evals/README.md`](evals/README.md).
+| Incident | What broke | Category | Confidence | Cost* |
+|---|---|---|---|---|
+| `image_pull` | Deployment references a non-existent image tag (currencyservice) | rollout | 0.95 | $0.07 |
+| `crash_loop` | Bad command crashes the container on startup (`ModuleNotFoundError`, emailservice) | workload | 0.75 | $0.10 |
+| `cascade` | A dependency (redis-cart) scaled to 0, no workload hint given | dependency | 0.95 | $0.10 |
+| `oom_killed` | Memory limit set too low, kernel OOM-kills the container (recommendationservice) | saturation | 0.80 | $0.11 |
+| `cpu_throttled` | CPU limit set too low, service works but is throttled (checkoutservice) | config | 0.92 | $0.09 |
+| `unschedulable` | A pod requests more CPU than any node has (paymentservice) | saturation | 0.85 | $0.12 |
+| `bad_config` | Pod spec references a Secret that doesn't exist (cartservice) | config | 0.95 | $0.07 |
+| `network_blocked` | A NetworkPolicy blocks previously-working traffic (checkoutservice → paymentservice) | networking | 0.95 | $0.20 |
+| `wrong_service_selector` | A Service's selector stops matching its own pods (frontend) | config | 0.85 | $0.11 |
+| `node_down`† | A worker node is cordoned and drained; pods evicted/rescheduled | node | 0.55 | $0.24 |
+
+\* claude-sonnet-5, `AGENT_EFFORT=medium`, after the caching fix below.
+† Correctly categorized as `node`, but named the wrong node as the pressure source — see
+Known gaps.
 
 The CrashLoopBackOff scenario has also been diagnosed **fully autonomously**: emailservice
 was broken at 20:02:41 with nothing else touched — `BoutiquePodStuck` fired, Alertmanager
@@ -285,11 +331,22 @@ run all session — while the model explicitly cited the prior failure by revisi
 and still proposed the right class of fix, just without unearned certainty.
 
 ## Known gaps
-- OpenTelemetry spans are wired into every node and tool call, but no exporter is
-  configured yet (`setup_tracing()` in `observability.py` is never invoked) — there's no
-  historical trace/timing data for any past run. On the list, not urgent.
-- 3 incident classes are scripted; more failure modes (OOM/resource limits, networking/DNS,
-  storage/PVC, node pressure) would broaden what's actually proven rather than just designed for.
+- 10 incident classes are scripted and recorded; 4 stretch incidents (`pvc_pending`,
+  `rbac_denied`, `hpa_stuck`, `cronjob_failing`) each need a new K8s resource type added
+  to the cluster first, and a `NetworkPolicy` "Case 1" (an old, legitimate policy the
+  *app* should route around, not a new one to delete) needs its own incident with
+  opposite ground truth from `network_blocked` — see
+  [`docs/incident-taxonomy-plan.md`](docs/incident-taxonomy-plan.md).
+- `node_down`'s diagnosis named the wrong node as the pressure source — it correctly
+  inferred the `node` category from symptom co-location (which pods restarted together)
+  rather than from a tool that directly surfaces which node is cordoned/NotReady, so it
+  pinned the blame on the node most pods happened to share, not the one actually drained.
+- An optional swap of the gather phase to a cheaper open model (Qwen via OpenRouter, see
+  `.env.example`'s `GATHER_MODEL`) ships dormant — unset by default, so it changes
+  nothing unless explicitly turned on. Measured ~17-18% cheaper on simple incidents with
+  no quality loss, but one `cascade` (the hardest incident) run cost +215% when the open
+  model produced an oversized transcript; not yet decided whether to enable it, and if
+  so, whether to route it only for simple incidents rather than as an all-or-nothing switch.
 - The listener is a foreground lab tool by design — no daemon/systemd, no HA, and the
   dashboard is local-only (it reads the same local SQLite file the CLI writes).
 - The dashboard shows finished runs; an in-progress investigation isn't streamed live yet.
