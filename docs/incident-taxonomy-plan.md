@@ -1,8 +1,9 @@
 # Incident taxonomy — planning note
 
-**Status: draft list, nothing built yet.** This is Step 1 of the eval-expansion plan
-(see below) — just the list of incidents to eventually turn into `Incident()` entries
-in `evals.py`. No code, no cluster changes, no API calls yet.
+**Status: Batch 1 complete.** All 9 steps of the eval-expansion plan below are done —
+all 10 incidents are built, recorded, and passing the remediation gate. See "Step 5-9 —
+done" further down for specifics, and "Next steps" at the bottom for what's actually
+still open (it's Batch 2 and incident #11, not anything in the numbered plan).
 
 ## The plan this feeds into
 
@@ -130,8 +131,37 @@ service's rollout history before recommending policy removal — see
 [tools_bridge.py](../src/sre_agent/agent/tools_bridge.py). This makes the agent *capable*
 of telling Case 1 from Case 2 for real incidents even before #11 exists as an eval.
 
-## Next step
+## Step 5-9 — done
 
-Step 5: record one real run per incident on a cheap model (Haiku), and save the result
-instead of discarding it. Step 6 (the replay mechanism) should exist before this, per
-the earlier ordering discussion.
+- **Step 5/9 (record + validate):** all 10 incidents have a saved run in
+  [tests/fixtures/recordings/](../tests/fixtures/recordings/) — the original 9
+  (`image_pull` through `wrong_service_selector`) recorded together on 2026-08-20,
+  `node_down` recorded separately on 2026-09-05 (deliberately alone, per the blast-radius
+  caution above).
+- **Step 6 (replay mode):** built — `sre-agent eval -i <name> --record` saves a run,
+  `--replay` re-scores it for free with no API call and no cluster changes. In active
+  use since; e.g. `node_down`'s recording replays to the identical scorecard.
+- **Step 7 (tune checks against recordings):** done — `must_include`/`expect_categories`
+  in [evals.py](../src/sre_agent/evals.py) were iterated against the saved recordings,
+  free and unlimited, rather than against the live API.
+- **Step 8 (check the guardrail against each recorded fix):** done — found 4/9 recorded
+  fixes were correctly diagnosed but rejected by `validate_remediation`'s allowlist
+  (`set`/`patch`/`delete` verbs weren't covered), fixed in
+  [remediation.py](../src/sre_agent/remediation.py) by adding scoped, content-inspected
+  validators for those three verbs. All 9 pass as of 2026-09-04 (`node_down`'s proposed
+  fix is read-only, so the gate doesn't apply to it).
+
+## Next steps
+
+The numbered plan above is finished. What's actually still open, in priority order:
+
+1. **Node-attribution gap found while recording `node_down`** (optional): the agent
+   named the wrong node as the pressure source, since no tool surfaces which node is
+   specifically cordoned/NotReady — it inferred `node` category correctly from
+   symptom co-location instead. Candidate fix: extend `get_node_status` (or a
+   correlate-step change) to surface that directly.
+2. **Incident #11** (NetworkPolicy Case 1, opposite ground truth from `network_blocked`)
+   — described above under "Known gap in `network_blocked`".
+3. **Batch 2** (`pvc_pending`, `rbac_denied`, `hpa_stuck`, `cronjob_failing`) — each
+   needs a new K8s resource type wired into the cluster first, same pattern as Batch 1's
+   Steps 2-3 above.
