@@ -76,6 +76,7 @@ def _pod_status(pod) -> PodStatus:
         start_time=st.start_time,
         reason=reason,
         containers=containers,
+        labels=dict(pod.metadata.labels or {}),
     )
 
 

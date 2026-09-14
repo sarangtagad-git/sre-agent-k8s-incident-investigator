@@ -29,6 +29,14 @@ class Incident:
     expect_categories: set[str]  # RCA category must be one of these (critical)
     must_include: list[str] = field(default_factory=list)  # all must appear in the RCA text
     must_include_any: list[str] = field(default_factory=list)  # at least one must appear
+    # Ground truth can also rule a specific fix OUT, not just check what's in the RCA
+    # text — e.g. "diagnosed correctly, but the actual PROPOSED command must not be
+    # 'just delete the NetworkPolicy'" (network_caller_drift, incident #11). Critical:
+    # fails if ALL of these substrings appear together in the lowercased remediation
+    # command — checked against the actual gated command, not free text, since that's
+    # the one thing that would actually reach the cluster. Empty by default (no incident
+    # is affected unless it opts in).
+    forbidden_remediation_all: list[str] = field(default_factory=list)
     min_score: float = 0.6  # confidence_score floor (informational)
 
 
@@ -80,6 +88,22 @@ def score(report: RCAReport, incident: Incident) -> list[Check]:
             decision.allowed,
             critical=False,
             detail=decision.reason if not decision.allowed else report.remediation.command,
+        )
+    )
+
+    cmd = (report.remediation.command or "").lower()
+    forbidden_hit = bool(incident.forbidden_remediation_all) and all(
+        s.lower() in cmd for s in incident.forbidden_remediation_all
+    )
+    checks.append(
+        Check(
+            "remediation_not_forbidden",
+            not forbidden_hit,
+            critical=True,
+            detail=(
+                f"remediation={report.remediation.command!r} "
+                f"forbidden_all={incident.forbidden_remediation_all}"
+            ),
         )
     )
 
@@ -301,5 +325,41 @@ INCIDENTS: list[Incident] = [
         wait_seconds=40,
         expect_categories={"node"},
         must_include_any=["node", "cordon", "drain", "notready", "not ready", "evict"],
+    ),
+    Incident(
+        name="network_caller_drift",
+        description=(
+            "An old, correct NetworkPolicy blocks paymentservice traffic because "
+            "checkoutservice's OWN rollout silently dropped a label the policy requires — "
+            "'Case 1' from docs/incident-taxonomy-plan.md, the opposite ground truth from "
+            "network_blocked (Case 2: fix = touch checkoutservice's label, NOT the policy)."
+        ),
+        stage=[
+            # 1. checkoutservice briefly carries the label the policy will require —
+            #    this is the "policy was written correctly for the app as it existed"
+            #    moment (its own revision history will show this).
+            ["kubectl", *_NS, "patch", "deployment/checkoutservice", "--type=json", "-p",
+             '[{"op":"add","path":"/spec/template/metadata/labels/net-tier","value":"trusted"}]'],
+            # 2. the (correct, should-stay-untouched) NetworkPolicy goes in.
+            ["kubectl", *_NS, "apply", "-f", "infra/eval-incidents/network-caller-drift-policy.yaml"],
+            # 3. the caller's own next rollout drops the label again — this is the actual
+            #    incident trigger, and also restores checkoutservice to its pristine
+            #    pre-incident state, so revert() only has to clean up the policy.
+            ["kubectl", *_NS, "patch", "deployment/checkoutservice", "--type=json", "-p",
+             '[{"op":"remove","path":"/spec/template/metadata/labels/net-tier"}]'],
+        ],
+        revert=[
+            ["kubectl", *_NS, "delete", "-f", "infra/eval-incidents/network-caller-drift-policy.yaml"],
+        ],
+        context=IncidentContext(
+            namespace="boutique",
+            workload=None,  # no hint: same surface symptom as network_blocked, different cause
+            alert="checkout fails at the payment step; frontend, checkout, and payment pods all look healthy",
+            skip_recall=True,
+        ),
+        wait_seconds=35,
+        expect_categories={"networking"},
+        must_include_any=["networkpolicy", "network policy", "label", "selector", "net-tier"],
+        forbidden_remediation_all=["delete", "networkpolicy"],
     ),
 ]

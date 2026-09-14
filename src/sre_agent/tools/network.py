@@ -70,7 +70,13 @@ def get_network_policies(
         for np in raw:
             rules: list[NetworkPolicyRule] = []
             for ing in np.spec.ingress or []:
-                rules.append(_rule("ingress", ing.from_, ing.ports))
+                # The k8s client maps the reserved word `from` to `_from`, not `from_`
+                # (a leading, not trailing, underscore) — this only ever executes for a
+                # policy with a real `from:` peer list, which none of the other eval
+                # incidents' policies have (network_blocked's is a bare `ingress: []`),
+                # so this crashed silently-to-the-tool-caller until network_caller_drift
+                # (incident #11) became the first to exercise it.
+                rules.append(_rule("ingress", ing._from, ing.ports))  # noqa: SLF001 — real client attr, not private access
             for eg in np.spec.egress or []:
                 rules.append(_rule("egress", eg.to, eg.ports))
             policies.append(

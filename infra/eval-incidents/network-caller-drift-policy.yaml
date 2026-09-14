@@ -1,0 +1,29 @@
+# Staged (once per run) and reverted by the `network_caller_drift` eval incident (see
+# evals.py) — incident #11 / "Case 1" from docs/incident-taxonomy-plan.md.
+#
+# Unlike network-blocked-policy.yaml (Case 2: a brand-new policy blocks previously-
+# working traffic — the fix is to remove the policy), this policy is CORRECT and
+# should NOT be touched. It only ever admits pods that carry BOTH the real,
+# never-changing `app: checkoutservice` label AND a `net-tier: trusted` label. The
+# incident's `stage` sequence briefly gives checkoutservice's pods that second label
+# (so this policy would pass cleanly if checked in isolation), applies this policy,
+# then removes the label again — simulating a caller whose own rollout silently
+# dropped a label it used to carry. The correct fix is to restore the label on
+# checkoutservice, not to delete this policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sre-eval-payment-trusted-callers
+  namespace: boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: paymentservice
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: checkoutservice
+              net-tier: trusted

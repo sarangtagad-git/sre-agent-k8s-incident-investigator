@@ -39,6 +39,56 @@ def test_get_network_policies_shape(clients):
     assert all(isinstance(p, NetworkPolicyInfo) for p in policies)
 
 
+def test_get_network_policies_renders_ingress_from_rule(clients):
+    """Regression test for a real bug: the k8s client maps the reserved word `from` to
+    `_from` (a leading underscore), not `from_` — get_network_policies crashed for any
+    policy with an actual `from:` peer list. Every OTHER incident's policy has a bare
+    `ingress: []` (network_blocked) or none at all, so this went undetected until
+    incident #11 (network_caller_drift) became the first to exercise the code path.
+    Stages a real policy with an ingress `from:` rule, asserts it renders instead of
+    raising, then cleans up.
+
+    Created/deleted with plain `kubectl` (the caller's own default context), not the
+    `clients` fixture — the agent's read-only RBAC correctly cannot create a
+    NetworkPolicy, by design; only the READ call under test uses `clients`.
+    """
+    import subprocess
+
+    name = "sre-eval-test-ingress-from-rule"
+    manifest = f"""\
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {name}
+  namespace: boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: paymentservice
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: checkoutservice
+"""
+    subprocess.run(
+        ["kubectl", "-n", "boutique", "apply", "-f", "-"],
+        input=manifest, text=True, check=True, capture_output=True,
+    )
+    try:
+        policies = get_network_policies("boutique", clients=clients)
+        target = next(p for p in policies if p.name == name)
+        assert target.rules, "ingress from: rule did not render"
+        assert "checkoutservice" in target.rules[0].peers[0]
+    finally:
+        subprocess.run(
+            ["kubectl", "-n", "boutique", "delete", "networkpolicy", name, "--ignore-not-found"],
+            check=True, capture_output=True,
+        )
+
+
 def test_get_service_status_frontend(clients):
     svc = get_service_status("boutique", "frontend", clients=clients)
     assert isinstance(svc, ServiceStatus)

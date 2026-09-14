@@ -47,6 +47,12 @@ class PodStatus(BaseModel):
     start_time: datetime | None = None
     reason: str | None = None  # first not-ready container's reason (the headline)
     containers: list[ContainerState] = Field(default_factory=list)
+    # The pod's own labels — not just the deployment's `app` label used for scheduling,
+    # but every label actually on the running pod. Without this, a NetworkPolicy's
+    # required podSelector (from get_network_policies) can never be checked against
+    # what's actually running: a pod can be Ready and its Deployment can look completely
+    # normal while a label a policy depends on quietly isn't there anymore.
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 class DeploymentStatus(BaseModel):

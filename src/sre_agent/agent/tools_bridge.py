@@ -48,7 +48,12 @@ ANTHROPIC_TOOLS: list[dict[str, Any]] = [
             "the pod spec. When a service is slow or crashing but its logs/events look "
             "clean, check ITS OWN limits before blaming a dependency — an aggressively "
             "low cpu_limit (e.g. \"5m\") or memory_limit is often the entire root cause "
-            "on its own, no metrics backend needed."
+            "on its own, no metrics backend needed.\n"
+            "Each pod also reports its full `labels`. If get_network_policies shows a "
+            "policy requiring a label a caller's pods don't currently have, that's a "
+            "real block, even though the pod itself looks Ready and its Deployment looks "
+            "fine — cross-check the caller's CURRENT pod labels against the policy's "
+            "podSelector before assuming the policy itself is the thing that changed."
         ),
         "input_schema": {
             "type": "object",
