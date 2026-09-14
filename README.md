@@ -112,14 +112,17 @@ Diagrams (in [`docs/architecture/`](docs/architecture/) — click to view):
 - [x] **9 · Alert-triggered investigations** — Alertmanager → webhook listener → guardrails → autonomous propose-only run; live-demoed end to end
 - [x] **10 · Incident memory** — a `recall` node feeds this workload's own past incidents into the RCA, text-only, cluster-checked-fresh-first, eval-isolated; two rounds of live calibration testing (over-trust, then under-use) hardened the prompt
 - [x] **11 · Applied-fix verification** — after a human-approved apply, poll for consecutive healthy checks before calling it resolved; the verdict feeds back into memory honestly
-- [x] **Eval taxonomy expansion** — 3 → 10 scripted incident classes (adds OOM, CPU
+- [x] **Eval taxonomy expansion** — 3 → 11 scripted incident classes (adds OOM, CPU
   throttling, unschedulable, bad config, NetworkPolicy block, wrong Service selector,
-  node down), 3 new read-only tools (`get_network_policies`/`get_service_status`/
-  `get_node_status`), and a record/replay mechanism so checks tune against a saved run
-  instead of the live API
+  node down, and NetworkPolicy Case 1 — a correct policy blocking a caller whose own
+  rollout drifted out of compliance, the opposite ground truth from the NetworkPolicy
+  block case), 3 new read-only tools (`get_network_policies`/`get_service_status`/
+  `get_node_status`) plus pod `labels` added to `get_workload_status`, and a
+  record/replay mechanism so checks tune against a saved run instead of the live API
 - [x] **Gate coverage** — extended `validate_remediation`'s allowlist with scoped,
   content-inspected `set resources`/`patch`/`delete` validators, closing a real gap where
-  4 of 9 correctly-diagnosed fixes were rejected on verb alone; 9/9 pass now
+  4 of 9 correctly-diagnosed fixes were rejected on verb alone; 9/11 pass now (the 2
+  remaining gaps are honest, documented ones — see Known gaps)
 - [x] **Tracing** — self-hosted Opik captures every LLM call, tool call, and reasoning
   span end to end (see "Observe the observer" above)
 - [x] **One-command dev environment** — `make up` brings up the cluster, Opik, the
@@ -141,7 +144,7 @@ src/sre_agent/
   remediation.py the Phase 5 allowlist validator + dry-run/apply gate (scoped `set
                  resources`/`patch`/`delete` validators included), plus the Phase 11
                  consecutive-healthy-checks recovery verifier
-  evals.py       the 10 scripted incidents (stage/revert/ground-truth) + scoring
+  evals.py       the 11 scripted incidents (stage/revert/ground-truth) + scoring
   eval_recording.py  save/replay a run so check-tuning is free after the first (paid) one
   history_store.py  SQLite persistence for every run (data/history.db, git-ignored),
                  including recalled prior incidents and verification outcomes
@@ -203,7 +206,7 @@ sre-agent investigate boutique -w redis-cart -x
 ```
 Regression-test the agent against ground truth (mutates the cluster, costs real money, always reverts):
 ```bash
-sre-agent eval                        # all 10 scripted incidents
+sre-agent eval                        # all 11 scripted incidents
 sre-agent eval -i cascade -y          # just one, skip the confirmation
 sre-agent eval -i cascade --record    # save the run for free replay later
 sre-agent eval -i cascade --replay    # re-score the saved run — no API call, no cluster changes
@@ -229,7 +232,7 @@ daily run cap before a cent is spent; every decline is logged with its reason, a
 resulting incidents show up in the dashboard with an "auto" badge.
 
 ## Incidents proven live
-All 10 are real `sre-agent eval --record` runs against the actual cluster — not mocked
+All 11 are real `sre-agent eval --record` runs against the actual cluster — not mocked
 examples — each with its own ground-truth check in [`evals.py`](src/sre_agent/evals.py)
 and a saved recording in [`tests/fixtures/recordings/`](tests/fixtures/recordings/) for
 free `--replay` scoring. See [`docs/incident-taxonomy-plan.md`](docs/incident-taxonomy-plan.md)
@@ -247,10 +250,14 @@ for how each one was built.
 | `network_blocked` | A NetworkPolicy blocks previously-working traffic (checkoutservice → paymentservice) | networking | 0.95 | $0.20 |
 | `wrong_service_selector` | A Service's selector stops matching its own pods (frontend) | config | 0.85 | $0.11 |
 | `node_down`† | A worker node is cordoned and drained; pods evicted/rescheduled | node | 0.55 | $0.24 |
+| `network_caller_drift`‡ | An old, correct NetworkPolicy blocks a caller whose OWN rollout dropped a required label (checkoutservice → paymentservice) | networking | 0.72 | $0.40 |
 
 \* claude-sonnet-5, `AGENT_EFFORT=medium`, after the caching fix below.
 † Correctly categorized as `node`, but named the wrong node as the pressure source — see
 Known gaps.
+‡ The opposite ground truth from `network_blocked`: correctly diagnosed the caller's
+label drift and proposed fixing checkoutservice, never proposing to delete the policy —
+see Known gaps for the real tool bug this incident surfaced along the way.
 
 The CrashLoopBackOff scenario has also been diagnosed **fully autonomously**: emailservice
 was broken at 20:02:41 with nothing else touched — `BoutiquePodStuck` fired, Alertmanager
@@ -331,16 +338,24 @@ run all session — while the model explicitly cited the prior failure by revisi
 and still proposed the right class of fix, just without unearned certainty.
 
 ## Known gaps
-- 10 incident classes are scripted and recorded; 4 stretch incidents (`pvc_pending`,
+- 11 incident classes are scripted and recorded; 4 stretch incidents (`pvc_pending`,
   `rbac_denied`, `hpa_stuck`, `cronjob_failing`) each need a new K8s resource type added
-  to the cluster first, and a `NetworkPolicy` "Case 1" (an old, legitimate policy the
-  *app* should route around, not a new one to delete) needs its own incident with
-  opposite ground truth from `network_blocked` — see
-  [`docs/incident-taxonomy-plan.md`](docs/incident-taxonomy-plan.md).
+  to the cluster first — see [`docs/incident-taxonomy-plan.md`](docs/incident-taxonomy-plan.md).
 - `node_down`'s diagnosis named the wrong node as the pressure source — it correctly
   inferred the `node` category from symptom co-location (which pods restarted together)
   rather than from a tool that directly surfaces which node is cordoned/NotReady, so it
   pinned the blame on the node most pods happened to share, not the one actually drained.
+- `network_caller_drift`'s correct fix (`kubectl patch` to restore a dropped pod-template
+  label) is rejected by `validate_remediation`'s allowlist — the patch-scope extension
+  from the Gate coverage roadmap item covers container resources and Service selectors,
+  not `spec.template.metadata.labels`. Same shape of gap as `node_down`'s, and the same
+  kind of decision: extend the allowlist further, or leave this one gated for a human to
+  apply by hand.
+- Building `network_caller_drift` found (and fixed) a real, previously-undetected bug:
+  `get_network_policies` crashed on any policy with an actual `ingress: - from: [...]`
+  rule (the k8s client maps the reserved word `from` to `_from`, not `from_`) — every
+  other incident's policy has no ingress rules or a bare `ingress: []`, so this went
+  unnoticed until this incident became the first to exercise a real `from:` peer list.
 - An optional swap of the gather phase to a cheaper open model (Qwen via OpenRouter, see
   `.env.example`'s `GATHER_MODEL`) ships dormant — unset by default, so it changes
   nothing unless explicitly turned on. Measured ~17-18% cheaper on simple incidents with

@@ -1,9 +1,9 @@
 # Incident taxonomy — planning note
 
-**Status: Batch 1 complete.** All 9 steps of the eval-expansion plan below are done —
-all 10 incidents are built, recorded, and passing the remediation gate. See "Step 5-9 —
-done" further down for specifics, and "Next steps" at the bottom for what's actually
-still open (it's Batch 2 and incident #11, not anything in the numbered plan).
+**Status: Batch 1 + incident #11 complete.** All 9 steps of the eval-expansion plan below
+are done — 11 incidents are built and recorded, 9 of 11 passing the remediation gate (2
+honest, documented gaps, not bugs — see "Step 5-9 — done"). See "Next steps" at the
+bottom for what's actually still open (it's Batch 2, not anything in the numbered plan).
 
 ## The plan this feeds into
 
@@ -39,14 +39,16 @@ new Kubernetes objects required.
 
 ## Batch 2 — stretch goals, need a small new resource added to the cluster first
 
-Not urgent — do these once Batch 1 is fully working end-to-end.
+Not urgent — do these once Batch 1 is fully working end-to-end. Numbered 12-15, not
+11-14 — #11 went to `network_caller_drift` (the NetworkPolicy Case 1 addendum below),
+built before this batch.
 
 | # | Name | Why it needs extra setup first |
 |---|------|----------------------------------|
-| 11 | `pvc_pending` | Nothing in `boutique` uses persistent storage today — needs a small test workload that does (PVC + StorageClass) |
-| 12 | `rbac_denied` | None of the current services call the Kubernetes API themselves — needs a tiny "canary" pod with its own ServiceAccount to break permissions on |
-| 13 | `hpa_stuck` | Nothing auto-scales today — needs an HPA added to a deployment first |
-| 14 | `cronjob_failing` | No scheduled jobs exist today — needs a CronJob added first |
+| 12 | `pvc_pending` | Nothing in `boutique` uses persistent storage today — needs a small test workload that does (PVC + StorageClass) |
+| 13 | `rbac_denied` | None of the current services call the Kubernetes API themselves — needs a tiny "canary" pod with its own ServiceAccount to break permissions on |
+| 14 | `hpa_stuck` | Nothing auto-scales today — needs an HPA added to a deployment first |
+| 15 | `cronjob_failing` | No scheduled jobs exist today — needs a CronJob added first |
 
 ## Step 2 results — tool / permission gap check (Batch 1)
 
@@ -104,52 +106,90 @@ ones (could briefly touch `monitoring`/`kube-system` too). Worth running this on
 deliberately/last, not lumped into a casual full-batch run, until you've watched it
 once and are comfortable with the blast radius.
 
-## Known gap in `network_blocked` (#8) — Case 1 vs Case 2
+## Incident #11 — `network_caller_drift` (NetworkPolicy Case 1 vs Case 2) — done
 
-`network_blocked` as built only covers one of two real scenarios:
+`network_blocked` (#8) only ever covered one of two real scenarios:
 
 - **Case 2 (what #8 tests)**: a *new* NetworkPolicy gets added and breaks previously-working
   traffic. Correct fix: remove/fix the policy. This is what `stage`/`revert` do today.
-- **Case 1 (not tested anywhere yet)**: an *old, legitimate* NetworkPolicy has been there
-  all along; the *app* changed and started sending traffic the policy correctly blocks.
-  Correct fix here is the opposite — touch the app, not the policy. Deleting the policy
-  would be the wrong answer.
+- **Case 1 (now `network_caller_drift`, #11)**: a *correct, unrelated-to-touch* NetworkPolicy
+  has been there all along; the *caller* changed and stopped satisfying it. Correct fix is
+  the opposite of Case 2 — touch the caller, not the policy. Deleting the policy would be
+  the wrong answer.
 
-These need opposite ground truth, so Case 1 can't just be a tweak to incident #8 — it
-needs its own incident with its own `must_include`/`expect_categories` (crucially, the
-RCA should NOT recommend removing the policy). Proposed as **incident #11 (Case 1)**,
-deferred for now: stage it by first creating an old-and-stable-looking NetworkPolicy
-protecting some service, waiting, *then* rolling out a change to a different service that
-starts calling it in a way the policy blocks. Ground truth: category `networking`, RCA
-must NOT suggest deleting the policy, must point at the caller's new traffic pattern instead.
+**Staging design** (fully self-contained per run, no standing cluster changes — every
+other incident already works this way, so this keeps the pattern): checkoutservice's
+`app` label is its Deployment's immutable selector, so a *second*, non-selector label
+(`net-tier: trusted`) is the only thing that can realistically be added and then dropped
+again. `stage` runs three `kubectl` calls in order: (1) patch checkoutservice's pod
+template to add `net-tier: trusted`, (2) apply
+[network-caller-drift-policy.yaml](../infra/eval-incidents/network-caller-drift-policy.yaml)
+(ingress to paymentservice requires `app: checkoutservice` AND `net-tier: trusted`), (3)
+patch checkoutservice again to remove the label — the actual trigger, and it also leaves
+checkoutservice back at its pristine label state, so `revert` only has to delete the
+policy. Verified live (manual `busybox` pods with/without the label against the applied
+policy) that the selector-based enforcement itself is correct before trusting any eval
+result built on top of it.
 
-**Fixed already**: `get_network_policies` now returns `created` (when the policy was
-made), and its tool description tells the agent to compare that against the calling
-service's rollout history before recommending policy removal — see
-[tools/schemas.py](../src/sre_agent/tools/schemas.py),
-[tools/network.py](../src/sre_agent/tools/network.py),
-[tools_bridge.py](../src/sre_agent/agent/tools_bridge.py). This makes the agent *capable*
-of telling Case 1 from Case 2 for real incidents even before #11 exists as an eval.
+**A real tool gap, found and closed while building this**: nothing exposed a pod's
+*actual current labels* anywhere — `get_workload_status`'s `PodStatus` had `reason`,
+`restarts`, container state, etc., but not `labels`, so the agent had no way to compare
+a caller's real current labels against a NetworkPolicy's required `podSelector` — it
+could only guess. Fixed by adding a `labels: dict[str, str]` field to `PodStatus`
+([tools/schemas.py](../src/sre_agent/tools/schemas.py),
+[tools/workload.py](../src/sre_agent/tools/workload.py)), plus a tool-description nudge
+telling the agent to cross-check it against `get_network_policies` before concluding the
+*policy* is what changed ([tools_bridge.py](../src/sre_agent/agent/tools_bridge.py)).
+
+**A real bug, found and fixed while building this**: `get_network_policies` crashed
+(`'V1NetworkPolicyIngressRule' object has no attribute 'from_'`) on any policy with an
+actual `ingress: - from: [...]` rule — the k8s client maps the reserved word `from` to
+`_from` (leading underscore), not `from_`. Every other incident's policy either has no
+ingress rules or a bare `ingress: []` (`network_blocked`), so this went undetected until
+`network_caller_drift` became the first to exercise a real `from:` peer list. Fixed in
+[tools/network.py](../src/sre_agent/tools/network.py); regression test added in
+[test_tools_network_service_node.py](../tests/test_tools_network_service_node.py)
+(stages a real policy with a `from:` rule via `kubectl`, since the agent's read-only RBAC
+correctly can't create one itself). First two live attempts silently produced a wrong
+`saturation` diagnosis instead of erroring loudly — the tool dispatcher swallows tool
+exceptions into an `{"error": ...}` result the model reads as "this tool didn't work,
+try something else," rather than surfacing the crash. Once fixed, the same live run
+correctly diagnosed `networking` (confidence 0.72) and proposed re-adding the label,
+never proposing to touch the policy.
+
+**Ground truth**: category `networking`; a new `forbidden_remediation_all` field on
+`Incident` (checked in `evals.py`'s `score()`) fails the run — critically — if the
+proposed remediation command contains both `delete` and `networkpolicy`. Checked against
+the actual gated command, not free RCA text, since that's the one thing that would
+reach the cluster.
 
 ## Step 5-9 — done
 
-- **Step 5/9 (record + validate):** all 10 incidents have a saved run in
+- **Step 5/9 (record + validate):** all 11 incidents have a saved run in
   [tests/fixtures/recordings/](../tests/fixtures/recordings/) — the original 9
   (`image_pull` through `wrong_service_selector`) recorded together on 2026-08-20,
   `node_down` recorded separately on 2026-09-05 (deliberately alone, per the blast-radius
-  caution above).
+  caution above), `network_caller_drift` recorded 2026-09-14 (see the section above for
+  the tool gap and bug it surfaced along the way).
 - **Step 6 (replay mode):** built — `sre-agent eval -i <name> --record` saves a run,
   `--replay` re-scores it for free with no API call and no cluster changes. In active
   use since; e.g. `node_down`'s recording replays to the identical scorecard.
 - **Step 7 (tune checks against recordings):** done — `must_include`/`expect_categories`
   in [evals.py](../src/sre_agent/evals.py) were iterated against the saved recordings,
   free and unlimited, rather than against the live API.
-- **Step 8 (check the guardrail against each recorded fix):** done — found 4/9 recorded
-  fixes were correctly diagnosed but rejected by `validate_remediation`'s allowlist
-  (`set`/`patch`/`delete` verbs weren't covered), fixed in
-  [remediation.py](../src/sre_agent/remediation.py) by adding scoped, content-inspected
-  validators for those three verbs. All 9 pass as of 2026-09-04 (`node_down`'s proposed
-  fix is read-only, so the gate doesn't apply to it).
+- **Step 8 (check the guardrail against each recorded fix):** done, twice. First pass
+  (2026-09-04): found 4/9 recorded fixes were correctly diagnosed but rejected by
+  `validate_remediation`'s allowlist (`set`/`patch`/`delete` verbs weren't covered), fixed
+  in [remediation.py](../src/sre_agent/remediation.py) by adding scoped, content-inspected
+  validators for those three verbs — 9/9 passed. Second pass (2026-09-14, after adding
+  `network_caller_drift`): 9/11 pass. The 2 gaps are both honest, not bugs — `node_down`'s
+  proposed fix is read-only (nothing for the gate to approve), and
+  `network_caller_drift`'s correct fix patches
+  `spec.template.metadata.labels.<key>` on a Deployment, a field path the current patch
+  allowlist doesn't cover (it only covers container `resources.limits`/`requests` + `name`
+  on workloads, and `spec.selector` on Services). Extending the allowlist to cover pod
+  template labels is real remaining design work, not something fixed as part of adding
+  this incident.
 
 ## Next steps
 
@@ -160,8 +200,10 @@ The numbered plan above is finished. What's actually still open, in priority ord
    specifically cordoned/NotReady — it inferred `node` category correctly from
    symptom co-location instead. Candidate fix: extend `get_node_status` (or a
    correlate-step change) to surface that directly.
-2. **Incident #11** (NetworkPolicy Case 1, opposite ground truth from `network_blocked`)
-   — described above under "Known gap in `network_blocked`".
-3. **Batch 2** (`pvc_pending`, `rbac_denied`, `hpa_stuck`, `cronjob_failing`) — each
-   needs a new K8s resource type wired into the cluster first, same pattern as Batch 1's
-   Steps 2-3 above.
+2. **Gate coverage gap found via incident #11** (optional): extend
+   `validate_remediation`'s patch allowlist to cover `spec.template.metadata.labels.*`
+   on workload controllers, scoped the same careful way the `set resources`/`patch`/
+   `delete` extension was (see Step 8 above and `remediation.py`).
+3. **Batch 2** (`pvc_pending`, `rbac_denied`, `hpa_stuck`, `cronjob_failing`, now numbered
+   12-15) — each needs a new K8s resource type wired into the cluster first, same pattern
+   as Batch 1's Steps 2-3 above.
