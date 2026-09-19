@@ -40,6 +40,7 @@ import sqlite3
 import streamlit as st
 
 from sre_agent import history_store
+from sre_agent.agent.schemas import ToolRecord
 
 CSS = """
 /* Typography: IBM Plex Sans for UI, IBM Plex Mono for code/ids/token readouts.
@@ -118,6 +119,7 @@ html, body, [data-testid="stAppViewContainer"] * {
 .ev { display: flex; gap: 0.5rem; font-size: 0.78rem; margin: 0.34rem 0; align-items: flex-start; }
 .ev .ok { color: var(--good); font-weight: 700; }
 .ev .no { color: var(--bad); font-weight: 700; }
+.ev .warn { color: var(--warn); font-weight: 700; }
 .ev .tool { font-weight: 600; }
 .ev .args { color: var(--muted); }
 .ev .summ { color: var(--muted); }
@@ -418,10 +420,11 @@ def _card_html(row: sqlite3.Row, number: int) -> str:
     cost = f"${row['cost_usd']:.4f}" if row["cost_usd"] is not None else "–"
     cat = f'<span class="cat">{esc(row["category"])}</span>' if row["category"] else ""
     auto = '<span class="auto-chip">auto</span>' if _is_auto(row) else ""
+    tool_pill = _tool_problem_pill(row)
     return f"""
     <div class="row">
       <div class="row-main">
-        <div class="row-top"><span class="inum">#{number}</span><span class="who">{esc(title)}</span>{cat}{auto}</div>
+        <div class="row-top"><span class="inum">#{number}</span><span class="who">{esc(title)}</span>{cat}{auto}{tool_pill}</div>
         <div class="sub">{esc(_summary_line(row))}</div>
       </div>
       <div class="row-side">
@@ -674,10 +677,44 @@ def _header_band(row: sqlite3.Row, number: int, evidence: list, correlation: dic
     """
 
 
+def _tool_problems(row: sqlite3.Row) -> list[tuple[str, str, str]]:
+    """(severity, tool, text) for every tool call in a saved run that crashed or returned
+    no data — the same rule the eval check uses (ToolRecord.problem), so a run's badge and
+    its Eval checks card can never disagree. Empty on a healthy or unparseable run."""
+    try:
+        records = [ToolRecord.model_validate(e) for e in json.loads(row["evidence_json"] or "[]")]
+    except (ValueError, TypeError):
+        return []
+    out = []
+    for r in records:
+        problem = r.problem()
+        if problem:
+            out.append((problem[0], r.tool, problem[1]))
+    return out
+
+
+def _tool_problem_pill(row: sqlite3.Row) -> str:
+    """A small feed-card badge: red "tool error" if any tool crashed, amber "tool warning"
+    if one only returned no data. The run page always showed a per-call mark, but nothing
+    on the feed said a run had one — you had to open it and scroll to notice."""
+    problems = _tool_problems(row)
+    if not problems:
+        return ""
+    crashed = any(sev == "error" for sev, _, _ in problems)
+    tools = ", ".join(sorted({tool for _, tool, _ in problems}))
+    cls, text = ("bad", "tool error") if crashed else ("warn", "tool warning")
+    return f'<span class="pill {cls}" title="{esc(tools)}">{text}</span>'
+
+
 def _evidence_html(evidence: list) -> str:
     rows = []
     for e in evidence:
-        mark = '<span class="ok">✓</span>' if e.get("ok") else '<span class="no">✗</span>'
+        if not e.get("ok"):
+            mark = '<span class="no">✗</span>'
+        elif ToolRecord.model_validate(e).warning_text():
+            mark = '<span class="warn">!</span>'  # ran, but returned no data
+        else:
+            mark = '<span class="ok">✓</span>'
         args = ", ".join(f"{k}={v}" for k, v in (e.get("input") or {}).items())
         args_html = f'<span class="args">({esc(args)})</span>' if args else ""
         rows.append(
@@ -717,6 +754,10 @@ def _render_detail(row: sqlite3.Row, number: int) -> None:
         # that's the separate "Evidence gathered" card in the right column below.
         if report.get("evidence"):
             st.markdown(_scard("Evidence cited", _bullet_list(report["evidence"])), unsafe_allow_html=True)
+
+        # tools that failed / returned no data — missing evidence the report must own up to
+        if report.get("evidence_gaps"):
+            st.markdown(_scard("Evidence gaps", _bullet_list(report["evidence_gaps"])), unsafe_allow_html=True)
 
         # alternatives the model considered and rejected
         if report.get("alternatives"):

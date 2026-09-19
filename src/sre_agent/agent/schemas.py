@@ -25,6 +25,35 @@ class ToolRecord(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
     ok: bool = True
     summary: str = ""  # short human-readable note
+    # The tool ran and returned a normal result, but that result says it could NOT get the
+    # data (Prometheus unreachable, a rejected query). Distinct from ok=False, which means
+    # the tool itself crashed (a bug in our code). Prometheus deliberately reports errors
+    # inside its result instead of raising, so without this field a dead metrics backend
+    # was recorded as a green check.
+    warning: str | None = None
+
+    def warning_text(self) -> str | None:
+        """`warning`, or — for records saved before that field existed — derived from the
+        summary so old recordings/history rows can still be graded. The fallback only
+        recognises Prometheus's own two failure prefixes; it can't recover a rejected
+        query whose error text was free-form."""
+        if self.warning:
+            return self.warning
+        if (
+            self.ok
+            and self.tool in ("query_prometheus", "query_prometheus_range")
+            and self.summary.startswith(("request failed", "query failed"))
+        ):
+            return self.summary
+        return None
+
+    def problem(self) -> tuple[str, str] | None:
+        """(severity, text) if this call needs a human's attention, else None. "error" =
+        the tool crashed; "warning" = it ran but couldn't get the data."""
+        if not self.ok:
+            return ("error", self.summary or "tool failed")
+        warning = self.warning_text()
+        return ("warning", warning) if warning else None
 
 
 class Remediation(BaseModel):
@@ -96,6 +125,10 @@ class RCAReport(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     # Other causes considered and rejected, each with its score, e.g. "config drift (0.15): …".
     alternatives: list[str] = Field(default_factory=list)
+    # Tools that failed or returned no data during this investigation, one line each — what
+    # was missing and what it could have shown. Empty on a healthy run. A missing signal is
+    # not an all-clear, so the report has to say so instead of quietly concluding without it.
+    evidence_gaps: list[str] = Field(default_factory=list)
     impact: str
     remediation: Remediation
 

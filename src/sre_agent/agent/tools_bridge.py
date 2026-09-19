@@ -223,6 +223,8 @@ def execute_tool(name: str, tool_input: dict, clients: dict | None) -> tuple[str
         # Input/Output panels — see GenAIMappingRules.java) — distinct from the plain
         # tool.name/tool.ok attributes below, which only drive metadata, not content.
         span.set_attribute("gen_ai.tool.call.arguments", _truncate(json.dumps(tool_input)))
+        warning: str | None = None  # set when a tool ran but couldn't get the data (see ToolRecord)
+        res: Any  # each branch below returns a different model; without this mypy pins it to the first
         try:
             if name == "get_workload_status":
                 res = get_workload_status(
@@ -250,6 +252,10 @@ def execute_tool(name: str, tool_input: dict, clients: dict | None) -> tuple[str
             elif name == "query_prometheus":
                 res = query_prometheus(tool_input["query"])
                 summary = res.error or f"{len(res.samples)} samples"
+                # Prometheus reports failure inside its result rather than raising (so a
+                # missing port-forward can't crash a run) — surface it as a warning so it
+                # is neither recorded as a clean success nor invisible to the model.
+                warning = res.error or None
             elif name == "get_network_policies":
                 res = get_network_policies(tool_input["namespace"], clients=clients)
                 summary = f"{len(res)} network policies"
@@ -263,10 +269,14 @@ def execute_tool(name: str, tool_input: dict, clients: dict | None) -> tuple[str
                 return (json.dumps({"error": f"unknown tool {name}"}), True, ToolRecord(tool=name, ok=False, summary="unknown tool"))
 
             content = _json(res)
-            record = ToolRecord(tool=name, input=tool_input, ok=True, summary=summary)
+            record = ToolRecord(tool=name, input=tool_input, ok=True, summary=summary, warning=warning)
             span.set_attribute("tool.ok", True)
+            if warning:
+                span.set_attribute("tool.warning", _truncate(warning))
             span.set_attribute("gen_ai.tool.call.result", _truncate(content))
-            return content, False, record
+            # is_error tells the model this result is a failure, not data — so a dead
+            # metrics backend reads as "no signal available", not "the metric is empty".
+            return content, bool(warning), record
         except Exception as exc:  # noqa: BLE001 — return the error to the model, don't crash the run
             span.set_attribute("tool.ok", False)
             error_content = json.dumps({"error": str(exc)})

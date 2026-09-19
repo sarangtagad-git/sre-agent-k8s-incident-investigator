@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .schemas import IncidentContext, PriorIncident
+from .schemas import IncidentContext, PriorIncident, ToolRecord
 
 SYSTEM_PROMPT = """\
 You are an SRE incident investigator for a Kubernetes cluster.
@@ -85,6 +85,9 @@ REPORT_INSTRUCTION = (
     "band (>=0.8 high, >=0.5 medium, else low).\n"
     "List the other hypotheses in `alternatives` as \"cause (score): why rejected\".\n"
     "Cite specific evidence (event reasons, log lines, image tags, metric values).\n"
+    "Leave `evidence_gaps` as [] unless a tool failed or returned no data (see any TOOL "
+    "FAILURES note) — it is not for checks you chose not to run or data you would have "
+    "liked.\n"
     "Propose a single remediation as the exact kubectl command a human would run — "
     "remember it must be approved by a human before anyone runs it.\n\n" + CATEGORY_GUIDE
 )
@@ -151,6 +154,71 @@ def render_memory_digest(prior: list[PriorIncident]) -> str:
             f"  outcome: {p.outcome_label}"
         )
     return "\n".join(lines)
+
+
+# Appended to the propose call only, and only when a tool failed (see render_tool_failure_note).
+EVIDENCE_GAPS_INSTRUCTION = (
+    "In `evidence_gaps`, list every failed tool named above, one line each: which tool, "
+    "what data was missing, and what it could have shown. Lower confidence_score if the "
+    "missing evidence could have changed the answer.\n"
+)
+
+
+def tool_gap_lines(evidence: list[ToolRecord]) -> list[str]:
+    """One line per tool call that crashed or returned no data, e.g.
+    "get_network_policies: error: 'from_' attribute missing". Deduplicated per (tool,
+    text) so a metrics backend that's down for five queries is one gap, not five."""
+    seen: set[str] = set()
+    lines: list[str] = []
+    for record in evidence:
+        problem = record.problem()
+        if problem is None:
+            continue
+        severity, text = problem
+        line = f"{record.tool} — {'FAILED' if severity == 'error' else 'returned no data'}: {text}"
+        if line not in seen:
+            seen.add(line)
+            lines.append(line)
+    return lines
+
+
+def merge_evidence_gaps(named: list[str], evidence: list[ToolRecord]) -> list[str]:
+    """`named` (what the model wrote in evidence_gaps) plus a line for every failed tool it
+    didn't mention. Only ever adds text — it never touches a confidence score — so
+    disclosure doesn't depend on the model following the prompt."""
+    text = " ".join(named).lower()
+    merged = list(named)
+    for gap in tool_gap_lines(evidence):
+        if gap.split(" — ")[0].lower() not in text:
+            merged.append(gap)
+    return merged
+
+
+def render_tool_failure_note(evidence: list[ToolRecord]) -> str:
+    """Tell the analysis calls which tools failed, so missing evidence is treated as
+    missing — not as an all-clear. Empty string when every tool worked, so this adds
+    nothing to a healthy run's prompt (no filler text ever reaches the model).
+
+    Prose only: it never changes a confidence score in code (same principle as the memory
+    digest). The guaranteed part — that the gap is *reported* — is enforced in code after
+    the report is written (see graph.py propose), not left to the model's compliance.
+
+    Why it exists: a crashed get_network_policies once left the agent to conclude
+    "saturation" with normal confidence from the tools that DID work, because nothing
+    told it that its NetworkPolicy evidence was simply absent."""
+    lines = tool_gap_lines(evidence)
+    if not lines:
+        return ""
+    bullets = "\n".join(f"- {line}" for line in lines)
+    return (
+        "\n\nTOOL FAILURES IN THIS INVESTIGATION — read before you conclude:\n"
+        f"{bullets}\n"
+        "A failed tool means that evidence is MISSING, not that it came back clean. Never "
+        "treat the absence of a signal from a failed tool as ruling a cause out. If a "
+        "failed tool could have confirmed or refuted a hypothesis, say so and score that "
+        "hypothesis lower for the missing check. Do not retry it — work from what you have."
+        "\n"
+    )
 
 
 def render_incident(incident: IncidentContext) -> str:

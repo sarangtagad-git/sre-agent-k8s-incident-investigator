@@ -39,11 +39,14 @@ from ..k8s import load_readonly_clients
 from ..observability import get_tracer, setup_tracing, truncate_for_trace as _truncate
 from .prompts import (
     CORRELATE_INSTRUCTION,
+    EVIDENCE_GAPS_INSTRUCTION,
     HYPOTHESIZE_INSTRUCTION,
     REPORT_INSTRUCTION,
     SYSTEM_PROMPT,
+    merge_evidence_gaps,
     render_incident,
     render_memory_digest,
+    render_tool_failure_note,
 )
 from .schemas import (
     AgentState,
@@ -597,7 +600,10 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
         with _tracer.start_as_current_span("agent.hypothesize"):
             say("\n[bold cyan]▶ hypothesize[/] — weighing competing root causes…")
             digest = render_memory_digest(state["prior_incidents"])
-            result: Hypotheses = analyze(state["messages"], HYPOTHESIZE_INSTRUCTION + digest, Hypotheses)
+            failures = render_tool_failure_note(state["evidence"])  # "" when every tool worked
+            result: Hypotheses = analyze(
+                state["messages"], HYPOTHESIZE_INSTRUCTION + digest + failures, Hypotheses
+            )
             hyps = result.hypotheses
             if console:
                 for h in hyps:
@@ -644,7 +650,17 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
                 analysis += "Correlation: " + corr.model_dump_json() + "\n"
             analysis += "Ranked hypotheses (top first): " + _hypotheses_for_report(ranked)
             digest = render_memory_digest(state["prior_incidents"])
-            report = analyze(state["messages"], analysis + digest + "\n\n" + REPORT_INSTRUCTION, RCAReport)
+            failures = render_tool_failure_note(state["evidence"])  # "" when every tool worked
+            gaps_ask = EVIDENCE_GAPS_INSTRUCTION if failures else ""
+            report = analyze(
+                state["messages"],
+                analysis + digest + failures + "\n\n" + gaps_ask + REPORT_INSTRUCTION,
+                RCAReport,
+            )
+            # Disclosure is guaranteed in code, not left to the model's compliance: any
+            # failed tool the model didn't name in evidence_gaps is added here. This only
+            # ever ADDS text — it never touches a confidence score (same rule as memory).
+            report.evidence_gaps = merge_evidence_gaps(report.evidence_gaps, state["evidence"])
 
             if console:
                 price_in, _ = _price_for(settings.agent_model)

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .agent.schemas import IncidentContext, RCAReport
+from .agent.schemas import IncidentContext, RCAReport, ToolRecord
 from .remediation import validate_remediation
 
 
@@ -54,8 +54,16 @@ def _haystack(report: RCAReport) -> str:
     return " ".join(parts).lower()
 
 
-def score(report: RCAReport, incident: Incident) -> list[Check]:
-    """Assert an RCA against an incident's ground truth. Critical checks gate pass/fail."""
+def score(
+    report: RCAReport, incident: Incident, evidence: list[ToolRecord] | None = None
+) -> list[Check]:
+    """Assert an RCA against an incident's ground truth. Critical checks gate pass/fail.
+
+    `evidence` is the run's tool-call log. When given, two process checks are added on top
+    of the answer checks: did any tool CRASH (critical — a bug in our tool code, relevant to
+    this incident or not), and did any tool return no data (info — usually the environment,
+    e.g. Prometheus unreachable). Left None, those checks are skipped entirely.
+    """
     hay = _haystack(report)
     checks: list[Check] = []
 
@@ -115,6 +123,46 @@ def score(report: RCAReport, incident: Incident) -> list[Check]:
             detail=f"score={report.confidence_score:.2f} (floor {incident.min_score})",
         )
     )
+
+    if evidence is not None:
+        crashed: list[tuple[str, str]] = []
+        no_data_set: set[tuple[str, str]] = set()
+        for record in evidence:
+            problem = record.problem()
+            if problem is None:
+                continue
+            severity, text = problem
+            if severity == "error":
+                crashed.append((record.tool, text))
+            else:
+                no_data_set.add((record.tool, text))
+        checks.append(
+            Check(
+                "no_tool_errors",
+                not crashed,
+                critical=True,
+                detail=(
+                    "; ".join(f"{tool}: {text}" for tool, text in crashed)
+                    if crashed
+                    else f"all {len(evidence)} tool calls ran"
+                ),
+            )
+        )
+        # Distinct (tool, text) pairs — a metrics backend that's down for five queries is one
+        # environment problem, not five.
+        no_data = sorted(no_data_set)
+        checks.append(
+            Check(
+                "no_tool_warnings",
+                not no_data,
+                critical=False,
+                detail=(
+                    "; ".join(f"{tool}: {text}" for tool, text in no_data)
+                    if no_data
+                    else "every tool returned data"
+                ),
+            )
+        )
     return checks
 
 

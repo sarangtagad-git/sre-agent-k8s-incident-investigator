@@ -283,7 +283,7 @@ def eval_cmd(
 
     def _score_and_report(result, inc) -> tuple[bool, list]:
         report = result.report
-        checks = score(report, inc)
+        checks = score(report, inc, evidence=result.evidence)
         ok = incident_passed(checks)
         console.print(
             f"  RCA: [bold]{report.category}[/] · {report.confidence_score:.2f} — "
