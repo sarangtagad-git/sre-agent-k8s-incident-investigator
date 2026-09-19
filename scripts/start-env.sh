@@ -15,6 +15,16 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# --no-opik: skip Opik entirely (it is the heaviest piece, ~3-4 GB, and tracing is a
+# no-op when it's unreachable) — start only the cluster, Boutique, and the dashboard.
+NO_OPIK=0
+for arg in "$@"; do
+  case "$arg" in
+    --no-opik) NO_OPIK=1 ;;
+    *) echo "unknown argument: $arg (supported: --no-opik)"; exit 2 ;;
+  esac
+done
+
 OPIK_DIR="/mnt/d/Claude Code/opik/deployment/docker-compose"
 LOG_DIR="/tmp/sre-agent-env"
 mkdir -p "$LOG_DIR"
@@ -37,15 +47,22 @@ else
   echo "  WARNING: couldn't detect the k3d server's host port, kubeconfig not refreshed"
 fi
 
-echo "== 3. launching Opik, port-forward, and dashboard IN PARALLEL =="
+if [ "$NO_OPIK" = "1" ]; then
+  echo "== 3. launching port-forward and dashboard IN PARALLEL (Opik skipped: --no-opik) =="
+else
+  echo "== 3. launching Opik, port-forward, and dashboard IN PARALLEL =="
+fi
 
 # --- Opik ---
-(
-  cd "$OPIK_DIR" || exit 1
-  export MYSQL_PORT=3307 SERVER_ADMIN_PORT=8082 MINIO_CONSOLE_PORT=9091
-  docker compose --profile opik up -d
-) > "$LOG_DIR/opik.log" 2>&1 &
-OPIK_PID=$!
+OPIK_PID=""
+if [ "$NO_OPIK" = "0" ]; then
+  (
+    cd "$OPIK_DIR" || exit 1
+    export MYSQL_PORT=3307 SERVER_ADMIN_PORT=8082 MINIO_CONSOLE_PORT=9091
+    docker compose --profile opik up -d
+  ) > "$LOG_DIR/opik.log" 2>&1 &
+  OPIK_PID=$!
+fi
 
 # --- Boutique frontend port-forward (skip if already healthy, else kill+restart) ---
 if ! curl -s -o /dev/null --max-time 2 http://localhost:8089/ 2>/dev/null; then
@@ -61,23 +78,43 @@ if ! curl -s -o /dev/null --max-time 2 http://localhost:8501/ 2>/dev/null; then
     > "$LOG_DIR/dashboard.log" 2>&1 &
 fi
 
-echo "  all three launched, waiting on Opik's compose call to finish issuing (not to be healthy)..."
-wait "$OPIK_PID"
+if [ "$NO_OPIK" = "0" ]; then
+  echo "  all three launched, waiting on Opik's compose call to finish issuing (not to be healthy)..."
+  wait "$OPIK_PID"
+else
+  echo "  both launched."
+fi
 
-echo "== 4. polling all three until ready (up to ~5 min) =="
+if [ "$NO_OPIK" = "1" ]; then
+  echo "== 4. polling boutique + dashboard until ready (up to ~5 min) =="
+else
+  echo "== 4. polling all three until ready (up to ~5 min) =="
+fi
 check() { curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$1" 2>/dev/null; }
 
 for i in $(seq 1 60); do
   B=$(check http://localhost:8089/)
   D=$(check http://localhost:8501/)
-  O=$(check http://localhost:5173/)
-  printf "\r  [%2ds] boutique=%s dashboard=%s opik=%s   " "$((i*5))" "${B:-...}" "${D:-...}" "${O:-...}"
-  if [ "$B" = "200" ] && [ "$D" = "200" ] && [ "$O" = "200" ]; then
+  if [ "$NO_OPIK" = "1" ]; then
+    O="skipped"
+    printf "\r  [%2ds] boutique=%s dashboard=%s   " "$((i*5))" "${B:-...}" "${D:-...}"
+    OPIK_OK=1
+  else
+    O=$(check http://localhost:5173/)
+    printf "\r  [%2ds] boutique=%s dashboard=%s opik=%s   " "$((i*5))" "${B:-...}" "${D:-...}" "${O:-...}"
+    OPIK_OK=0
+    [ "$O" = "200" ] && OPIK_OK=1
+  fi
+  if [ "$B" = "200" ] && [ "$D" = "200" ] && [ "$OPIK_OK" = "1" ]; then
     echo ""
     echo "== ALL READY =="
     echo "  Boutique app : http://localhost:8089"
     echo "  Dashboard    : http://localhost:8501"
-    echo "  Opik         : http://localhost:5173"
+    if [ "$NO_OPIK" = "1" ]; then
+      echo "  Opik         : skipped (--no-opik)"
+    else
+      echo "  Opik         : http://localhost:5173"
+    fi
     exit 0
   fi
   sleep 5

@@ -34,3 +34,6 @@ dashboard:  ## Launch the Streamlit run-history dashboard
 
 up:  ## Bring up k3d + Opik + Boutique port-forward + dashboard, all in parallel (WSL-side; from Windows use scripts/start-env.ps1 instead, it also handles Docker Desktop)
 	bash scripts/start-env.sh
+
+up-lite:  ## Same as `up` but skips Opik (~3-4 GB lighter): k3d + Boutique port-forward + dashboard only (from Windows: scripts/start-env.ps1 -NoOpik)
+	bash scripts/start-env.sh --no-opik

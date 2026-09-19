@@ -14,6 +14,8 @@
 # (hit this once already: "Missing closing ')' in expression" from a single
 # em-dash inside a string literal).
 
+param([switch]$NoOpik)   # -NoOpik: skip Opik (~3-4 GB lighter); same as start-env.sh --no-opik
+
 $ErrorActionPreference = "Stop"
 $repoWinPath = "D:\Claude Code\SRE Agent - K8S Incident Investigator"
 $repoWslPath = "/mnt/d/Claude Code/SRE Agent - K8S Incident Investigator"
@@ -47,4 +49,6 @@ if (-not $dockerUp) {
 }
 
 Write-Host "== Handing off to WSL for the rest (k3d, Opik, port-forward, dashboard) ==" -ForegroundColor Cyan
-wsl.exe -e bash -lc "cd '$repoWslPath' && bash scripts/start-env.sh"
+$extraArgs = ""
+if ($NoOpik) { $extraArgs = " --no-opik" }
+wsl.exe -e bash -lc "cd '$repoWslPath' && bash scripts/start-env.sh$extraArgs"
