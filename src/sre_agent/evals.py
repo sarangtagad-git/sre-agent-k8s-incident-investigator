@@ -37,6 +37,12 @@ class Incident:
     # the one thing that would actually reach the cluster. Empty by default (no incident
     # is affected unless it opts in).
     forbidden_remediation_all: list[str] = field(default_factory=list)
+    # Substrings the ROOT CAUSE ITSELF must contain (critical), for incidents where
+    # naming the right *target* is the whole point. must_include/must_include_any search
+    # the whole report — including `alternatives` — so a report that merely mentions the
+    # target while dismissing it ("agent-1 is cordoned but not hosting any affected pods")
+    # satisfies them. node_down passed that way while blaming the wrong node.
+    root_cause_must_name: list[str] = field(default_factory=list)
     min_score: float = 0.6  # confidence_score floor (informational)
 
 
@@ -88,6 +94,22 @@ def score(
             detail=f"must_include={incident.must_include} any-of={incident.must_include_any}",
         )
     )
+
+    if incident.root_cause_must_name:
+        cause = report.root_cause.lower()
+        missing = [n for n in incident.root_cause_must_name if n.lower() not in cause]
+        checks.append(
+            Check(
+                "root_cause_names_target",
+                not missing,
+                critical=True,
+                detail=(
+                    f"root cause names {incident.root_cause_must_name}"
+                    if not missing
+                    else f"root cause does not name {missing}: {report.root_cause[:90]!r}"
+                ),
+            )
+        )
 
     decision = validate_remediation(report.remediation.command)
     checks.append(
@@ -373,6 +395,9 @@ INCIDENTS: list[Incident] = [
         wait_seconds=40,
         expect_categories={"node"},
         must_include_any=["node", "cordon", "drain", "notready", "not ready", "evict"],
+        # The category alone was passing while the agent blamed the node the evicted pods
+        # RESTARTED ON (server-0) instead of the one that was drained (agent-1).
+        root_cause_must_name=["agent-1"],
     ),
     Incident(
         name="network_caller_drift",

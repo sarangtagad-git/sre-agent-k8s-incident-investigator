@@ -186,7 +186,16 @@ ANTHROPIC_TOOLS: list[dict[str, Any]] = [
             "`kubectl get nodes`). Cluster-scoped, no namespace argument.\n"
             "Use when pods across multiple namespaces or workloads are unhealthy at "
             "once, or a pod is stuck Pending/evicted — the cause may be the node "
-            "itself (NotReady, cordoned, disk/memory pressure), not the workload."
+            "itself (NotReady, cordoned, disk/memory pressure), not the workload.\n"
+            "Each node also lists its taints and `recent_events`, each with how long ago "
+            "it happened. A cordon shows as schedulable=false, an unschedulable taint "
+            "stamped with when it was added, and a NodeNotSchedulable event — those "
+            "timestamps tell you WHEN.\n"
+            "A cordoned node that hosts none of the unhealthy pods is NOT ruled out — it "
+            "is what a drain looks like. Draining moves every pod OFF a node, so they "
+            "restart on the OTHER nodes. Do not blame the node the pods restarted on "
+            "just because they cluster there: that is where they landed, not what "
+            "displaced them. Compare the cordon/event time against the pods' start times."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },

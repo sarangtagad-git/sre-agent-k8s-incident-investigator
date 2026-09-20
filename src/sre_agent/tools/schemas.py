@@ -214,3 +214,13 @@ class NodeStatus(BaseModel):
     schedulable: bool  # False if cordoned (spec.unschedulable)
     conditions: list[str] = Field(default_factory=list)  # e.g. "MemoryPressure=False"
     kubelet_version: str | None = None
+    # e.g. "node.kubernetes.io/unschedulable:NoSchedule (added 3m ago, 2026-09-20T09:13:13Z)"
+    # — what keeps new pods off a cordoned/unhealthy node, straight from the node spec,
+    # with when it was added (the API records that on the taint itself).
+    taints: list[str] = Field(default_factory=list)
+    # Recent events about THIS node, newest first, each with when it happened, e.g.
+    # "NodeNotSchedulable 3m ago (2026-09-20T09:01:02Z): Node ... status is now: ...".
+    # The node object only says a node IS cordoned, never WHEN — and "when" is the whole
+    # diagnosis: a cordon that lands just before a wave of pod restarts elsewhere is a
+    # drain, and the node the pods restarted ON is the destination, not the cause.
+    recent_events: list[str] = Field(default_factory=list)
