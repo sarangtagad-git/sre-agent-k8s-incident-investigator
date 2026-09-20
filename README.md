@@ -140,11 +140,12 @@ saved recording in [`tests/fixtures/recordings/`](tests/fixtures/recordings/) fo
 | `bad_config` | Pod spec references a Secret that doesn't exist (cartservice) | config | 0.95 | $0.07 |
 | `network_blocked` | A NetworkPolicy blocks previously-working traffic (checkoutservice → paymentservice) | networking | 0.95 | $0.20 |
 | `wrong_service_selector` | A Service's selector stops matching its own pods (frontend) | config | 0.85 | $0.11 |
-| `node_down`† | A worker node is cordoned and drained; pods evicted/rescheduled | node | 0.55 | $0.24 |
+| `node_down`† | A worker node is cordoned and drained; pods evicted/rescheduled | node | 0.75 | $0.12 |
 | `network_caller_drift`‡ | An old, correct NetworkPolicy blocks a caller whose OWN rollout dropped a required label | networking | 0.72 | $0.40 |
 
 \* claude-sonnet-5, `AGENT_EFFORT=medium`, after the caching fix.
-† Correct category, wrong node named — see Known gaps.
+† Now required to name the drained node (`agent-1`) in the root cause itself; see Known gaps for what
+that re-record does and doesn't prove.
 ‡ The opposite ground truth from `network_blocked`: it correctly fixed the caller instead
 of deleting the policy.
 
@@ -182,13 +183,18 @@ missing. An error path that nothing surfaces is indistinguishable from no error 
 
 ## Known gaps
 
-- **`node_down` names the wrong node.** It infers the `node` category from symptom
-  co-location rather than from a tool that directly surfaces which node is
-  cordoned/NotReady, so it blames the node most pods happen to share.
-- **`network_caller_drift`'s correct fix is gated.** Restoring a dropped pod-template label
-  needs `kubectl patch` on `spec.template.metadata.labels`, which the allowlist doesn't
-  cover. Arguably correct — that label grants access through a NetworkPolicy — but it means
-  a human applies this one by hand.
+- **`node_down`'s fix is unproven against noise.** The first recording blamed `server-0`
+  (the node the evicted pods *restarted on*) instead of the drained `agent-1`. `get_node_status`
+  now reports taints with when they were added, plus timed node events, and the eval requires
+  the root cause itself to name `agent-1`. The re-record names it correctly, but a control run
+  with the *old* tool on the same cluster did too — the reboot that preceded it had wiped the
+  restart history that misled the first run, and I couldn't recreate that noise. What the change
+  demonstrably buys is grounding (the report cites the exact cordon time) and a check that would
+  have failed the original run.
+- **Two correct fixes are gated by the allowlist.** `network_caller_drift`'s label patch
+  (`spec.template.metadata.labels`) and `node_down`'s `kubectl uncordon`. The first is arguably
+  right to gate — that label grants access through a NetworkPolicy; `uncordon` is reversible and
+  a plausible candidate to allow. Today a human applies both by hand.
 - **4 stretch incidents** (`pvc_pending`, `rbac_denied`, `hpa_stuck`, `cronjob_failing`)
   each need a new Kubernetes resource type in the cluster first.
 - **The cheaper-gather-model swap ships dormant.** An optional open model (Qwen via

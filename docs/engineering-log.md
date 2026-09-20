@@ -104,7 +104,7 @@ tool exception and hands it to the model as ordinary text — deliberately, so o
 can't abort an investigation. But nothing else read that failure: not the eval scorecard,
 not the dashboard feed, not the report. The model quietly reasoned around the missing
 evidence and answered with normal confidence, and the only trace was a ✗ on the run-detail
-page. Two paid runs were spent before the actual cause surfaced.
+page. Three paid runs (about $1.06) were spent before the actual cause surfaced.
 
 A second, quieter variant turned up in the same audit: `query_prometheus` reports failure
 *inside* a normal result rather than raising, so an unreachable Prometheus was recorded as
@@ -123,3 +123,38 @@ is indistinguishable from no error handling at all. The first live test of the f
 second defect — the model had no definition of `evidence_gaps` and filled it with checks it
 had simply chosen not to run — which only showed up because the healthy direction was
 tested too, not just the failing one.
+
+## 7. The drained node that hosts nothing — and a fix I couldn't fully prove
+
+During the `node_down` incident (a worker node cordoned and drained), the agent ruled out the
+right node and blamed the wrong one. My first diagnosis of the bug was itself wrong. I wrote
+that no tool showed which node was cordoned — but `get_node_status` did, and the agent had
+read it, concluding "agent-1 is cordoned/unschedulable but not hosting any affected pods".
+
+That sentence is the actual error, and it's a reasoning trap worth naming: a drain moves
+every pod *off* a node, so the drained node always hosts nothing, and the evicted pods restart
+on the *other* nodes. The agent saw a wave of restarts clustered on `server-0` and blamed it —
+the node they landed on, not the one that displaced them. The node object records that a node
+is cordoned, never *when*, and the timing is what separates "a cordon just preceded these
+restarts" from "this node has a problem".
+
+The eval had let it through for a second reason. `must_include_any` searches the whole report
+including the `alternatives` list, so a line *dismissing* `agent-1` satisfied it. A new
+`root_cause_must_name` check requires the root cause itself to name the target, and the old
+recording fails it.
+
+The fix added taints with their `timeAdded` (k3s stamps a cordon's taint with it — found by
+probing the live cluster before building anything) and timed node events, plus a tool
+description saying a drained node hosting nothing is not ruled out.
+
+**Then the control.** The re-recorded run named `agent-1` correctly, at higher confidence and
+half the cost. Before claiming that, I ran the *old* tool on the same cluster — and it got the
+right answer too. The reboot that preceded the run had wiped every pod's restart history, and
+that history was exactly what had misled the first run. The improvement can't be cleanly
+attributed to the change. What the control did surface: its own report named the precise gap
+this change fills. So the honest claim is narrower than the tempting one — better grounding and
+a stricter check, not a demonstrated fix for the original failure.
+
+**The lesson:** when a fix and an environmental change land together, an improvement is
+evidence of nothing until you've run the old code in the new environment. It cost $0.14 and
+changed what I was willing to say.

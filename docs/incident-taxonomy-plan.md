@@ -163,6 +163,37 @@ proposed remediation command contains both `delete` and `networkpolicy`. Checked
 the actual gated command, not free RCA text, since that's the one thing that would
 reach the cluster.
 
+## node_down revisited — target attribution (2026-09-20)
+
+The first `node_down` recording passed on category alone while blaming `server-0`, the node
+the evicted pods *restarted on*, instead of `agent-1`, the one actually drained.
+
+**The original diagnosis of the cause was wrong.** I first wrote that "no tool shows which
+node is cordoned". It did: `get_node_status` already reported `schedulable=False`, and the
+agent saw it and wrote "agent-1 is cordoned/unschedulable but not hosting any affected pods" —
+then ruled it out. That is the actual mistake: a drain moves every pod *off* a node, so a
+freshly drained node always hosts nothing. "Hosts no affected pods" is what a drain looks
+like, not an alibi. What was missing was *when*: the node object records that a node is
+cordoned, never since when, and the timing is what lines a cordon up against a wave of
+restarts elsewhere.
+
+**Changes.** `get_node_status` now returns taints with when each was added (k3s stamps the
+cordon's `node.kubernetes.io/unschedulable` taint with `timeAdded`, verified live — a
+durable record that outlives the ~1h event) and recent node events with ages
+(`NodeNotSchedulable`). The tool description now says a cordoned node hosting nothing is
+not ruled out and not to blame the node pods landed on. The eval gained
+`root_cause_must_name`: the ROOT CAUSE ITSELF must contain `agent-1`. The old keyword check
+searches the whole report including `alternatives`, so a line dismissing `agent-1` satisfied
+it. The old recording now fails the new check, as it should.
+
+**Result and its limits.** Re-recorded live: names `agent-1`, cites the taint time and event
+time, 0.75 confidence, 2 tool calls, $0.12 (was 0.55 / 9 calls / $0.24). But a control run —
+the old tool, stashed, on the same cluster — also named `agent-1` (0.60, 3 tool calls), so the
+improvement is **not** cleanly attributable to the tool change: the reboot before the
+re-record wiped the real restart history that misled the first run. The control's own report
+did name the exact gap this change fills ("no historical node-condition or node-event tool
+was available to confirm agent-1's state at 09:16Z"). n=1 each.
+
 ## Step 5-9 — done
 
 - **Step 5/9 (record + validate):** all 11 incidents have a saved run in
@@ -170,7 +201,8 @@ reach the cluster.
   (`image_pull` through `wrong_service_selector`) recorded together on 2026-08-20,
   `node_down` recorded separately on 2026-09-05 (deliberately alone, per the blast-radius
   caution above), `network_caller_drift` recorded 2026-09-14 (see the section above for
-  the tool gap and bug it surfaced along the way).
+  the tool gap and bug it surfaced along the way), and `node_down` re-recorded 2026-09-20 (see
+  "node_down revisited" below).
 - **Step 6 (replay mode):** built — `sre-agent eval -i <name> --record` saves a run,
   `--replay` re-scores it for free with no API call and no cluster changes. In active
   use since; e.g. `node_down`'s recording replays to the identical scorecard.
@@ -183,7 +215,9 @@ reach the cluster.
   in [remediation.py](../src/sre_agent/remediation.py) by adding scoped, content-inspected
   validators for those three verbs — 9/9 passed. Second pass (2026-09-14, after adding
   `network_caller_drift`): 9/11 pass. The 2 gaps are both honest, not bugs — `node_down`'s
-  proposed fix is read-only (nothing for the gate to approve), and
+  proposed fix was then read-only (nothing for the gate to approve; since the 2026-09-20
+  re-record it proposes `kubectl uncordon`, which the allowlist rejects as an unlisted verb —
+  reversible, so a reasonable candidate to allow), and
   `network_caller_drift`'s correct fix patches
   `spec.template.metadata.labels.<key>` on a Deployment, a field path the current patch
   allowlist doesn't cover (it only covers container `resources.limits`/`requests` + `name`
@@ -195,15 +229,13 @@ reach the cluster.
 
 The numbered plan above is finished. What's actually still open, in priority order:
 
-1. **Node-attribution gap found while recording `node_down`** (optional): the agent
-   named the wrong node as the pressure source, since no tool surfaces which node is
-   specifically cordoned/NotReady — it inferred `node` category correctly from
-   symptom co-location instead. Candidate fix: extend `get_node_status` (or a
-   correlate-step change) to surface that directly.
-2. **Gate coverage gap found via incident #11** (optional): extend
-   `validate_remediation`'s patch allowlist to cover `spec.template.metadata.labels.*`
-   on workload controllers, scoped the same careful way the `set resources`/`patch`/
-   `delete` extension was (see Step 8 above and `remediation.py`).
+1. **Gate coverage gaps** (optional, a design decision): `spec.template.metadata.labels`
+   patches (`network_caller_drift`) and `uncordon` (`node_down`). Scope each as carefully as
+   the `set resources`/`patch`/`delete` extension (see Step 8 above and `remediation.py`) —
+   the label patch arguably *should* stay gated, since that label grants network access.
+2. **Prove the `node_down` improvement under noise** (optional): a control showed the old tool
+   also got it right once the restart history was wiped. Recreating a cluster with genuine
+   restart waves on the wrong node, then running both tools several times, would settle it.
 3. **Batch 2** (`pvc_pending`, `rbac_denied`, `hpa_stuck`, `cronjob_failing`, now numbered
    12-15) — each needs a new K8s resource type wired into the cluster first, same pattern
    as Batch 1's Steps 2-3 above.

@@ -49,6 +49,11 @@ report. A crash now fails the eval critically, a tool that returns no data warns
 report must name what was missing. Story in
 [engineering-log.md](engineering-log.md#6-a-crashed-tool-that-produced-a-confident-wrong-answer).
 
+**Node timing.** `get_node_status` reports taints with when they were added and timed node
+events, and `node_down` must now name the drained node in the root cause itself. See
+[incident-taxonomy-plan.md](incident-taxonomy-plan.md#node_down-revisited--target-attribution-2026-09-20)
+and [engineering-log.md](engineering-log.md#7-the-drained-node-that-hosts-nothing--and-a-fix-i-couldnt-fully-prove).
+
 **One-command dev environment.** `make up` brings up the cluster, Opik, the Boutique
 port-forward, and the dashboard together, polling until all are ready. `make up-lite`
 skips Opik, which is about 3–4 GB lighter.
