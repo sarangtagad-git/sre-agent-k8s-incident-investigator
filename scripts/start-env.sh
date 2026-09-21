@@ -59,7 +59,12 @@ if [ "$NO_OPIK" = "0" ]; then
   (
     cd "$OPIK_DIR" || exit 1
     export MYSQL_PORT=3307 SERVER_ADMIN_PORT=8082 MINIO_CONSOLE_PORT=9091
-    docker compose --profile opik up -d
+    # --pull missing: Opik's compose file sets `pull_policy: always` on nearly every service,
+    # so each start re-checks the registry — and when Docker Hub refused the (already
+    # downloaded) minio/mc image, the WHOLE `up` aborted. `missing` only pulls what isn't on
+    # disk, so a fresh machine still downloads everything but a restart doesn't need the
+    # network. Not `never`, which would break the very first setup.
+    docker compose --profile opik up -d --pull missing
   ) > "$LOG_DIR/opik.log" 2>&1 &
   OPIK_PID=$!
 fi
