@@ -36,8 +36,9 @@ against a saved run instead of the live API. See
 
 **Gate coverage.** Extended `validate_remediation`'s allowlist with scoped,
 content-inspected `set resources`/`patch`/`delete` validators, closing a real gap where 4
-of 9 correctly-diagnosed fixes were rejected on the verb alone. 9 of 11 pass now; the two
-that don't are documented in the README's Known gaps.
+of 9 correctly-diagnosed fixes were rejected on the verb alone. A later scoped `uncordon`
+validator (one named node, no flags) took it to 10 of 11; the one that doesn't pass is
+documented in the README's Known gaps.
 
 **Tracing.** OpenTelemetry spans were wired into every node and tool call from day 1;
 they now export to a self-hosted [Opik](https://github.com/comet-ml/opik) instance, so

@@ -221,6 +221,62 @@ def test_scoped_mutating_still_respects_protected_namespace():
     assert "kube-system" in d.reason
 
 
+# --- scoped `uncordon` (the node_down fix; see docs/incident-taxonomy-plan.md) -------------
+
+def test_allows_recorded_uncordon_fix():
+    # exact command proposed by tests/fixtures/recordings/node_down.json
+    d = validate_remediation("kubectl uncordon k3d-sre-lab-agent-1")
+    assert d.allowed, d.reason
+    assert d.mutating == [["kubectl", "uncordon", "k3d-sre-lab-agent-1"]]
+
+
+def test_allows_uncordon_then_readonly_verify_chain():
+    d = validate_remediation("kubectl uncordon k3d-sre-lab-agent-1 && kubectl get nodes")
+    assert d.allowed, d.reason
+    assert len(d.mutating) == 1 and len(d.readonly) == 1
+
+
+@pytest.mark.parametrize(
+    "cmd, reason",
+    [
+        ("kubectl uncordon", "node name is required"),
+        ("kubectl uncordon agent-1 agent-2", "single node name"),
+        ("kubectl uncordon -l role=worker", "flag not allowed"),
+        ("kubectl uncordon --selector=role=worker", "flag not allowed"),
+        ("kubectl uncordon agent-1 --dry-run=client", "flag not allowed"),
+        ("kubectl uncordon agent-1 -n boutique", "flag not allowed"),
+        ("kubectl uncordon node/agent-1", "not a plain node name"),
+        ("kubectl uncordon Agent_1", "not a plain node name"),
+        ("kubectl uncordon -agent-1", "flag not allowed"),
+        ("kubectl uncordon " + "a" * 254, "not a plain node name"),
+    ],
+)
+def test_uncordon_rejects_unsafe_shapes(cmd, reason):
+    d = validate_remediation(cmd)
+    assert not d.allowed
+    assert reason in d.reason
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "kubectl cordon k3d-sre-lab-agent-1",   # removes capacity
+        "kubectl drain k3d-sre-lab-agent-1 --ignore-daemonsets",  # evicts pods
+        "kubectl taint nodes k3d-sre-lab-agent-1 key=value:NoSchedule",
+    ],
+)
+def test_capacity_removing_node_verbs_stay_rejected(cmd):
+    d = validate_remediation(cmd)
+    assert not d.allowed
+    assert "allowlist" in d.reason
+
+
+def test_uncordon_still_respects_shared_gate_checks():
+    assert "kube-system" in validate_remediation("kubectl -n kube-system uncordon x").reason
+    assert "redirect" in validate_remediation("kubectl uncordon x --kubeconfig=/tmp/e").reason
+    assert "metacharacter" in validate_remediation("kubectl uncordon x; rm -rf /").reason
+
+
 def test_rejects_readonly_only_command():
     # A command with no mutating action is not a remediation.
     d = validate_remediation("kubectl -n boutique get pods")

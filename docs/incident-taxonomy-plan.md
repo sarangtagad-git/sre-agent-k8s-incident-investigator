@@ -1,8 +1,8 @@
 # Incident taxonomy — planning note
 
 **Status: Batch 1 + incident #11 complete.** All 9 steps of the eval-expansion plan below
-are done — 11 incidents are built and recorded, 9 of 11 passing the remediation gate (2
-honest, documented gaps, not bugs — see "Step 5-9 — done"). See "Next steps" at the
+are done — 11 incidents are built and recorded, 10 of 11 passing the remediation gate (1
+honest, documented gap, not a bug — see "Step 5-9 — done"). See "Next steps" at the
 bottom for what's actually still open (it's Batch 2, not anything in the numbered plan).
 
 ## The plan this feeds into
@@ -216,9 +216,9 @@ was available to confirm agent-1's state at 09:16Z"). n=1 each.
   validators for those three verbs — 9/9 passed. Second pass (2026-09-14, after adding
   `network_caller_drift`): 9/11 pass. The 2 gaps are both honest, not bugs — `node_down`'s
   proposed fix was then read-only (nothing for the gate to approve; since the 2026-09-20
-  re-record it proposes `kubectl uncordon`, which the allowlist rejects as an unlisted verb —
-  reversible, so a reasonable candidate to allow), and
-  `network_caller_drift`'s correct fix patches
+  re-record it proposes `kubectl uncordon`, which the allowlist rejected as an unlisted verb;
+  **closed 2026-09-26** with a scoped validator — one named node, no flags — so 10/11 pass),
+  and `network_caller_drift`'s correct fix patches
   `spec.template.metadata.labels.<key>` on a Deployment, a field path the current patch
   allowlist doesn't cover (it only covers container `resources.limits`/`requests` + `name`
   on workloads, and `spec.selector` on Services). Extending the allowlist to cover pod
@@ -229,10 +229,10 @@ was available to confirm agent-1's state at 09:16Z"). n=1 each.
 
 The numbered plan above is finished. What's actually still open, in priority order:
 
-1. **Gate coverage gaps** (optional, a design decision): `spec.template.metadata.labels`
-   patches (`network_caller_drift`) and `uncordon` (`node_down`). Scope each as carefully as
-   the `set resources`/`patch`/`delete` extension (see Step 8 above and `remediation.py`) —
-   the label patch arguably *should* stay gated, since that label grants network access.
+1. **Gate coverage gap** (optional, a design decision): `spec.template.metadata.labels`
+   patches (`network_caller_drift`). `uncordon` (`node_down`) is now allowed — see Step 8. Scope
+   any label patch as carefully as the other validators (see `remediation.py`) — it arguably
+   *should* stay gated, since that label grants network access.
 2. **Prove the `node_down` improvement under noise** (optional): a control showed the old tool
    also got it right once the restart history was wiped. Recreating a cluster with genuine
    restart waves on the wrong node, then running both tools several times, would settle it.

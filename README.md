@@ -191,10 +191,10 @@ missing. An error path that nothing surfaces is indistinguishable from no error 
   restart history that misled the first run, and I couldn't recreate that noise. What the change
   demonstrably buys is grounding (the report cites the exact cordon time) and a check that would
   have failed the original run.
-- **Two correct fixes are gated by the allowlist.** `network_caller_drift`'s label patch
-  (`spec.template.metadata.labels`) and `node_down`'s `kubectl uncordon`. The first is arguably
-  right to gate — that label grants access through a NetworkPolicy; `uncordon` is reversible and
-  a plausible candidate to allow. Today a human applies both by hand.
+- **One correct fix is still gated by the allowlist:** `network_caller_drift`'s label patch
+  (`spec.template.metadata.labels`). It is arguably right to gate — that label grants access
+  through a NetworkPolicy — so today a human applies it by hand. (`node_down`'s
+  `kubectl uncordon` is now allowed, scoped to one named node with no flags.)
 - **4 stretch incidents** (`pvc_pending`, `rbac_denied`, `hpa_stuck`, `cronjob_failing`)
   each need a new Kubernetes resource type in the cluster first.
 - **The cheaper-gather-model swap ships dormant.** An optional open model (Qwen via

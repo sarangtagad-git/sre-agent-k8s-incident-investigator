@@ -5,10 +5,11 @@ gate between that proposal and any change to the cluster. It exists so a halluci
 overreaching command can never reach the API server:
 
   1. validate  — default-deny allowlist. `scale`, `rollout undo`/`restart` are allowed
-     outright; `set resources`, `patch`, and `delete` are allowed only in narrow,
+     outright; `set resources`, `patch`, `delete`, and `uncordon` are allowed only in narrow,
      content-inspected forms (see the scoped validators below — resource-limit edits on
      workload controllers, merge/strategic patches touching only a small safe field set,
-     and NetworkPolicy deletion by name); a few read-only verbs are allowed for
+     NetworkPolicy deletion by name, and uncordoning one named node); a few read-only
+     verbs are allowed for
      verification. Everything else — apply, exec, secrets, --kubeconfig redirection,
      shell metacharacters, system namespaces — is rejected.
   2. dry-run   — the mutating command is replayed with `--dry-run=server` so the API server
@@ -303,10 +304,39 @@ def _validate_delete(tokens: list[str]) -> str | None:
     return None
 
 
+# --- kubectl uncordon --------------------------------------------------------------------
+# Scoped to a single named node with NO flags — the one shape a `node_down`-style fix needs.
+# `uncordon` has a bulk mode (`-l selector`), so the bare verb can't be allowed outright.
+# Flags are rejected wholesale, not just the risky ones: the gate appends its own
+# `--dry-run=server`, and a proposed `--dry-run=client` would turn the "apply" into a silent
+# no-op that still reports success. `cordon` and `drain` stay shut — they remove capacity.
+
+_NODE_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")  # DNS-1123 subdomain
+_MAX_NODE_NAME_LEN = 253
+
+
+def _validate_uncordon(tokens: list[str]) -> str | None:
+    """Return None if the `uncordon` command is allowed, else a rejection reason."""
+    for tok in tokens:
+        if tok.startswith("-"):
+            return f"uncordon: flag not allowed: {tok.split('=', 1)[0]}"
+
+    rest = _positionals(tokens)[1:]  # after "uncordon"
+    if not rest:
+        return "uncordon: a node name is required"
+    if len(rest) > 1:
+        return "uncordon: only a single node name is allowed"
+    name = rest[0]
+    if len(name) > _MAX_NODE_NAME_LEN or not _NODE_NAME_RE.match(name):
+        return f"uncordon: not a plain node name: {name!r}"
+    return None
+
+
 _SCOPED_MUTATING_VALIDATORS.update({
     ("set", "resources"): _validate_set_resources,
     ("patch",): _validate_patch,
     ("delete",): _validate_delete,
+    ("uncordon",): _validate_uncordon,
 })
 
 
