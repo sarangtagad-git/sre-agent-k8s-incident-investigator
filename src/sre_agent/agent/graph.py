@@ -18,6 +18,18 @@ Pipeline: gather -> recall -> correlate -> hypothesize -> rank -> propose.
 Model calls use the official Anthropic SDK (adaptive thinking + effort). The gather
 loop caches the stable system+tools prefix to cut cost. With verbose=True each step
 streams to the console. The agent is read-only; the proposed fix is never executed.
+
+Two independent opt-in swaps route stages through an OpenAI-compatible open model
+instead of Claude (see config.py):
+  GATHER_MODEL       gather only. Everything else stays on Claude. Live-tested.
+  ALL_STAGES_MODEL   correlate/hypothesize/propose too — requires GATHER_MODEL to
+                     also be set (these three only ever see a translatable
+                     plain-dict transcript once gather itself produced one).
+Neither swap gets Claude's extended-thinking or cache_control — no equivalent
+exists on an OpenAI-compatible endpoint, which is exactly why swapping gather
+alone was found (live) to raise cost, not cut it: correlate/hypothesize/propose
+lose their own cache-read discount once gather's output is no longer something
+Claude itself just cached. Both empty = today's all-Claude behavior, unchanged.
 """
 
 from __future__ import annotations
@@ -26,6 +38,7 @@ import json
 import re
 import time
 import uuid
+import warnings
 
 import anthropic
 import httpx
@@ -238,11 +251,40 @@ def _gather_call_open_model(settings, messages: list) -> tuple[dict, dict]:
     return data["choices"][0]["message"], data.get("usage") or {}
 
 
+# $ per 1M tokens for each open model this project has actually measured live against
+# OpenRouter's own `usage.cost` — keyed by the exact OpenRouter model id. Add an entry
+# here whenever a NEW model is measured; never edit an existing entry's numbers without
+# re-measuring, and never assume today's model shares yesterday's price. This was the
+# real bug found 2026-09-30: gather_price_in/gather_price_out held Qwen2.5-72B's August
+# price but were silently applied to DeepSeek V4.1 Flash too, once config C started
+# pricing all four stages through the same fallback instead of just gather.
+_GATHER_MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "qwen/qwen-2.5-72b-instruct": (0.36, 0.40),  # measured live 2026-08-03
+    "deepseek/deepseek-v4.1-flash": (0.02, 0.60),  # OpenRouter list price, checked 2026-09-29
+}
+
+
+def _price_for_gather(model: str, settings) -> tuple[float, float]:
+    """(price_in, price_out) for `model`, or settings.gather_price_in/out as a last-
+    resort fallback — loudly, via warnings.warn, never silently. The fallback is
+    whatever model the constant was last measured for, not necessarily this one."""
+    price = _GATHER_MODEL_PRICES.get(model)
+    if price is not None:
+        return price
+    warnings.warn(
+        f"no measured OpenRouter price for gather/all-stages model {model!r} — falling "
+        f"back to gather_price_in/gather_price_out (${settings.gather_price_in}/"
+        f"${settings.gather_price_out} per 1M), which may be a different model's price. "
+        "Add a real entry to _GATHER_MODEL_PRICES in graph.py once you've measured this "
+        "model's actual cost.",
+        stacklevel=2,
+    )
+    return settings.gather_price_in, settings.gather_price_out
+
+
 def _estimate_gather_cost(gather_totals: dict, settings) -> float:
-    return (
-        gather_totals["input"] * settings.gather_price_in
-        + gather_totals["output"] * settings.gather_price_out
-    ) / 1e6
+    price_in, price_out = _price_for_gather(settings.gather_model, settings)
+    return (gather_totals["input"] * price_in + gather_totals["output"] * price_out) / 1e6
 
 
 def _hypotheses_for_report(ranked: list[Hypothesis]) -> str:
@@ -414,6 +456,39 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
             text = fence.group(1).strip()
         return json.loads(text)
 
+    def _analyze_call_open_model(messages, ask) -> str:
+        """Open-model equivalent of _analyze_call — a single-shot JSON write, no
+        tools (nothing to protect a Claude cache prefix for here), no thinking/
+        cache_control (no equivalent exists on an OpenAI-compatible endpoint; same
+        reason gather never replays a thinking block for this model — see
+        _openai_message_to_blocks). Reuses gather's own translation helper, which
+        only works because `messages` is guaranteed plain dicts here: this path
+        requires gather_model to also be set, so gather itself already produced
+        that shape."""
+        resp = httpx.post(
+            f"{settings.gather_base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.gather_api_key}"},
+            json={
+                "model": settings.all_stages_model,
+                "messages": _messages_to_openai(SYSTEM_PROMPT, messages + [{"role": "user", "content": ask}]),
+                "max_tokens": 8000,
+            },
+            timeout=90,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        usage = data.get("usage") or {}
+        text = (data["choices"][0]["message"].get("content") or "").strip()
+        track_gather(usage)
+        span = trace.get_current_span()
+        span.set_attribute("gen_ai.system", "openai")
+        span.set_attribute("gen_ai.request.model", settings.all_stages_model)
+        span.set_attribute("gen_ai.usage.input_tokens", usage.get("prompt_tokens", 0) or 0)
+        span.set_attribute("gen_ai.usage.output_tokens", usage.get("completion_tokens", 0) or 0)
+        span.set_attribute("gen_ai.input.messages", _truncate(ask))
+        span.set_attribute("gen_ai.output.messages", _truncate(text))
+        return text
+
     def analyze(messages, instruction, model_cls):
         """One structured-output analysis call over the gathered evidence (no new tools)."""
         schema_hint = _compact_schema(model_cls)
@@ -422,6 +497,16 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
             "object (no markdown fences, no prose before or after) matching this JSON "
             f"schema:\n{schema_hint}"
         )
+        if settings.all_stages_model:
+            text = _analyze_call_open_model(messages, ask)
+            try:
+                return model_cls.model_validate(_extract_json_object(text))
+            except (json.JSONDecodeError, ValueError) as exc:
+                say(f"     [dim](JSON parse failed: {exc} — retrying with a firmer instruction)[/]")
+                firm_ask = ask + "\n\nYour previous reply was not valid JSON. Output ONLY the JSON object, nothing else."
+                text = _analyze_call_open_model(messages, firm_ask)
+                return model_cls.model_validate(_extract_json_object(text))
+
         resp = _analyze_call(messages, ask)
         if resp.stop_reason == "tool_use":
             say("     [dim](model reached for a tool instead of JSON — forcing tool_choice=none)[/]")
@@ -677,8 +762,9 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
                 )
                 if settings.gather_model:
                     gather_est = _estimate_gather_cost(gather_totals, settings)
+                    label = "all stages" if settings.all_stages_model else "gather model"
                     say(
-                        f"[bold]est. cost[/] (gather model, {settings.gather_model}) "
+                        f"[bold]est. cost[/] (open model, {label}, {settings.gather_model}) "
                         f"~${gather_est:.4f}  [dim](in={gather_totals['input']} "
                         f"out={gather_totals['output']})[/]"
                     )
@@ -712,6 +798,13 @@ def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
         raise RuntimeError("ANTHROPIC_API_KEY is not set (copy .env.example -> .env and add it).")
     if settings.gather_model and not settings.gather_api_key:
         raise RuntimeError("GATHER_MODEL is set but GATHER_API_KEY is not (see .env.example).")
+    if settings.all_stages_model and not settings.gather_model:
+        raise RuntimeError(
+            "ALL_STAGES_MODEL is set but GATHER_MODEL is not — correlate/hypothesize/"
+            "propose only ever see a translatable (plain-dict) transcript if gather "
+            "itself already ran on an open model. Set GATHER_MODEL too (usually to the "
+            "same model)."
+        )
 
     # No-op unless OPIK_URL / LANGFUSE_URL are set — see observability.py. Idempotent,
     # so repeated investigate() calls in one process (e.g. `sre-agent eval`) are fine.

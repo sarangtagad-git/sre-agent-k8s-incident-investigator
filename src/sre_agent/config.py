@@ -21,11 +21,25 @@ class Settings(BaseSettings):
     gather_model: str = ""  # e.g. "qwen/qwen-2.5-72b-instruct" (an OpenRouter model id)
     gather_base_url: str = "https://openrouter.ai/api/v1"
     gather_api_key: str = Field(default="")
-    # $ per 1M tokens for gather_model — measured from OpenRouter's own `usage.cost`
-    # on a live qwen/qwen-2.5-72b-instruct call (2026-08-03); re-verify if you swap
-    # models. Used only for the verbose cost estimate, not billing.
+    # Last-resort fallback $ per 1M tokens, used ONLY when gather_model/all_stages_model
+    # isn't in graph.py's _GATHER_MODEL_PRICES table — real per-model prices live there
+    # now (add a measured entry there instead of trusting this fallback). These two
+    # defaults are still Qwen2.5-72B's August price; a real bug was found 2026-09-30
+    # where DeepSeek runs silently used this stale Qwen number instead — kept here only
+    # as the fallback, and graph.py now warns loudly whenever it's actually used.
     gather_price_in: float = 0.36
     gather_price_out: float = 0.40
+
+    # All-stages model swap (config "C"): route correlate/hypothesize/propose through
+    # an open model too, over the SAME OpenAI-compatible endpoint as gather_model
+    # (gather_base_url/gather_api_key). Requires gather_model to also be set — these
+    # three stages only ever see a plain-dict message transcript (the shape gather's
+    # own open-model path produces) if gather itself already ran on an open model;
+    # otherwise the transcript still holds real Claude SDK objects and translation
+    # breaks. Empty = today's behavior, unchanged (these three stages stay on Claude
+    # regardless of gather_model). No thinking/cache_control equivalent exists for
+    # this path — see _analyze_call_open_model in graph.py.
+    all_stages_model: str = ""  # e.g. "deepseek/deepseek-v4.1-flash" (an OpenRouter model id)
 
     # Optional LLM-observability export (see observability.py). Both are OTLP/HTTP
     # sinks fed from the SAME spans — set either, both, or neither; empty url = that
