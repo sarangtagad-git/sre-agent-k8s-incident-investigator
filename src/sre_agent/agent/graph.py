@@ -41,7 +41,6 @@ import uuid
 import warnings
 
 import anthropic
-import httpx
 from langgraph.graph import END, START, StateGraph
 from opentelemetry import trace
 from rich.console import Console
@@ -61,6 +60,7 @@ from .prompts import (
     render_memory_digest,
     render_tool_failure_note,
 )
+from .provider_http import post_chat_completion
 from .schemas import (
     AgentState,
     Correlation,
@@ -234,20 +234,16 @@ def _gather_call_open_model(settings, messages: list) -> tuple[dict, dict]:
     """One gather iteration against the swapped-in open model, over its
     OpenAI-compatible endpoint (works for OpenRouter/DeepInfra/DeepSeek/Groq/etc.
     unchanged — only base_url/model/api_key differ). Returns (message, usage)."""
-    resp = httpx.post(
-        f"{settings.gather_base_url.rstrip('/')}/chat/completions",
-        headers={"Authorization": f"Bearer {settings.gather_api_key}"},
-        json={
+    data = post_chat_completion(
+        settings,
+        {
             "model": settings.gather_model,
             "messages": _messages_to_openai(SYSTEM_PROMPT, messages),
             "tools": OPENAI_TOOLS,
             "tool_choice": "auto",
             "max_tokens": 8000,
         },
-        timeout=90,
     )
-    resp.raise_for_status()
-    data = resp.json()
     return data["choices"][0]["message"], data.get("usage") or {}
 
 
@@ -465,18 +461,14 @@ def _build_graph(client, clients, settings, verbose=False, console=None):
         only works because `messages` is guaranteed plain dicts here: this path
         requires gather_model to also be set, so gather itself already produced
         that shape."""
-        resp = httpx.post(
-            f"{settings.gather_base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.gather_api_key}"},
-            json={
+        data = post_chat_completion(
+            settings,
+            {
                 "model": settings.all_stages_model,
                 "messages": _messages_to_openai(SYSTEM_PROMPT, messages + [{"role": "user", "content": ask}]),
                 "max_tokens": 8000,
             },
-            timeout=90,
         )
-        resp.raise_for_status()
-        data = resp.json()
         usage = data.get("usage") or {}
         text = (data["choices"][0]["message"].get("content") or "").strip()
         track_gather(usage)
