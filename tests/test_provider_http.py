@@ -28,6 +28,12 @@ def _settings() -> Settings:
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    """The retry loop waits between tries; no test here should really wait."""
+    monkeypatch.setattr("sre_agent.agent.provider_http.time.sleep", lambda _s: None)
+
+
 def _fake_post(monkeypatch, response: httpx.Response) -> dict:
     """Replace httpx.post; returns a dict that records how it was called."""
     seen: dict = {}
@@ -108,3 +114,159 @@ def test_graph_makes_no_provider_call_of_its_own():
     # _build_graph and cannot be reached directly, hence this source-level guard.
     source = Path(graph.__file__).read_text(encoding="utf-8")
     assert "httpx.post" not in source and "raise_for_status" not in source
+
+
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        (None, True), (408, True), (429, True), (500, True), (503, True),
+        (400, False), (401, False), (402, False), (403, False), (404, False),
+    ],
+)
+def test_retryable_by_status(status, expected):
+    assert ProviderError(status, "x").retryable is expected
+
+
+def test_no_answer_message_has_no_http():
+    err = ProviderError(None, model="m", note="no answer: ReadTimeout")
+    assert "HTTP" not in str(err)
+    assert "ReadTimeout" in str(err)
+
+
+def test_retry_after_defaults_to_none():
+    assert ProviderError(503, "x").retry_after is None
+    assert ProviderError(429, "x", retry_after=20.0).retry_after == 20.0
+
+
+# --- retry loop -------------------------------------------------------------------------
+# sleep_fn/clock_fn are injected (same idea as verify_recovery) so none of these wait.
+
+
+def _resp(status, **kw):
+    return httpx.Response(status, request=_REQUEST, **kw)
+
+
+def _sequence(monkeypatch, *replies):
+    """Fake provider: each call takes the next item; an exception item is raised."""
+    queue, calls = list(replies), []
+
+    def fake(url, **kwargs):
+        calls.append(url)
+        item = queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(httpx, "post", fake)
+    return calls  # len(calls) = number of attempts made
+
+
+def _call(**kw):
+    return post_chat_completion(_settings(), {"model": "m"}, **kw)
+
+
+def test_success_on_first_try_never_waits(monkeypatch):
+    calls, waits = _sequence(monkeypatch, _resp(200, json={"ok": True})), []
+    assert _call(sleep_fn=waits.append) == {"ok": True}
+    assert len(calls) == 1 and waits == []
+
+
+def test_503_then_200_is_retried(monkeypatch):
+    calls = _sequence(monkeypatch, _resp(503, text="busy"), _resp(200, json={"ok": True}))
+    waits = []
+    assert _call(sleep_fn=waits.append) == {"ok": True}
+    assert len(calls) == 2 and waits == [0.5]
+
+
+def test_401_gives_up_at_once(monkeypatch):
+    calls, waits = _sequence(monkeypatch, _resp(401, text="bad key")), []
+    with pytest.raises(ProviderError) as err:
+        _call(sleep_fn=waits.append)
+    assert err.value.status == 401 and len(calls) == 1 and waits == []
+
+
+def test_first_403_is_retried_once(monkeypatch):
+    calls = _sequence(monkeypatch, _resp(403, text="blip"), _resp(200, json={"ok": True}))
+    waits = []
+    assert _call(sleep_fn=waits.append) == {"ok": True}
+    assert len(calls) == 2 and waits == [0.5]
+
+
+def test_second_403_gives_up(monkeypatch):
+    calls = _sequence(
+        monkeypatch, _resp(403, text="no"), _resp(403, text="no"), _resp(200, json={"ok": True})
+    )
+    waits = []
+    with pytest.raises(ProviderError) as err:
+        _call(sleep_fn=waits.append)
+    assert err.value.status == 403
+    assert len(calls) == 2 and waits == [0.5]  # the 200 is never asked for
+
+
+def test_three_503s_give_up_after_three_attempts(monkeypatch):
+    calls = _sequence(monkeypatch, *[_resp(503, text="busy")] * 3)
+    waits = []
+    with pytest.raises(ProviderError) as err:
+        _call(sleep_fn=waits.append)
+    assert err.value.status == 503
+    assert len(calls) == 3 and waits == [0.5, 1.0]
+
+
+def test_timeout_is_retried_then_succeeds(monkeypatch):
+    calls = _sequence(monkeypatch, httpx.ReadTimeout("slow"), _resp(200, json={"ok": True}))
+    waits = []
+    assert _call(sleep_fn=waits.append) == {"ok": True}
+    assert len(calls) == 2 and waits == [0.5]
+
+
+def test_persistent_timeouts_raise_a_no_answer_error(monkeypatch):
+    _sequence(monkeypatch, *[httpx.ConnectTimeout("x")] * 3)
+    with pytest.raises(ProviderError) as err:
+        _call(sleep_fn=lambda _s: None)
+    assert err.value.status is None and "ConnectTimeout" in str(err.value)
+
+
+def test_retry_after_is_obeyed(monkeypatch):
+    _sequence(
+        monkeypatch,
+        _resp(429, text="slow", headers={"retry-after": "20"}),
+        _resp(200, json={"ok": True}),
+    )
+    waits = []
+    _call(sleep_fn=waits.append)
+    assert waits == [20.0]
+
+
+def test_retry_after_is_capped_at_30_seconds(monkeypatch):
+    _sequence(
+        monkeypatch,
+        _resp(429, text="slow", headers={"retry-after": "3600"}),
+        _resp(200, json={"ok": True}),
+    )
+    waits = []
+    _call(sleep_fn=waits.append)
+    assert waits == [30.0]
+
+
+def test_a_garbage_retry_after_falls_back_to_normal_backoff(monkeypatch):
+    _sequence(
+        monkeypatch,
+        _resp(429, text="slow", headers={"retry-after": "abc"}),
+        _resp(200, json={"ok": True}),
+    )
+    waits = []
+    _call(sleep_fn=waits.append)
+    assert waits == [0.5]
+
+
+def test_gives_up_instead_of_waiting_past_the_deadline(monkeypatch):
+    # clock reads: 0 at the start, 105 s at the first failure. 105 + 20 > 120, so no retry.
+    calls = _sequence(
+        monkeypatch,
+        _resp(429, text="slow", headers={"retry-after": "20"}),
+        _resp(200, json={"ok": True}),
+    )
+    times, waits = iter([0.0, 105.0]), []
+    with pytest.raises(ProviderError) as err:
+        _call(sleep_fn=waits.append, clock_fn=lambda: next(times))
+    assert err.value.status == 429 and len(calls) == 1 and waits == []
