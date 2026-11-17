@@ -158,3 +158,50 @@ a stricter check, not a demonstrated fix for the original failure.
 **The lesson:** when a fix and an environmental change land together, an improvement is
 evidence of nothing until you've run the old code in the new environment. It cost $0.14 and
 changed what I was willing to say.
+
+## 8. A provider error whose explanation I threw away
+
+Three of thirteen attempts in the open-model review died on an OpenRouter 403 — and I could not
+say why. OpenRouter documents 403 as a permissions, budget, guardrail or moderation problem and
+puts *which* in the response body. My code called `raise_for_status()`, which builds its message
+from the status line and URL only. The one sentence that would have answered the question was
+read off the wire and discarded.
+
+**Step one was to stop discarding it.** One helper, `post_chat_completion`, now makes every
+provider call and raises a small `ProviderError` carrying the status and the body (capped at
+1000 characters). The request and headers are deliberately not kept: the API key travels in a
+header and the request holds cluster data. A `200` whose body isn't JSON is wrapped the same
+way, so callers see one error type. A source-level test guards that `graph.py` never calls the
+provider itself again.
+
+**Step two was the retry policy,** designed one decision at a time rather than copied:
+
+- *Which errors.* Retry when nothing answered (timeout, refused or dropped connection), on 408,
+  429 and every 5xx. Don't retry 400, 401, 402 — a second try gets the same answer. I checked
+  the installed Anthropic SDK for a reference point: 2 retries, 0.5 s start, doubling, jittered.
+- *Two limits, not one.* Three attempts caps the count; a 120 s deadline caps the time, because
+  one attempt can legitimately take 90 s. Neither alone bounds the worst case. The deadline
+  never shortens a wait — it only decides retry-or-give-up.
+- *Waits of 0.5 s then 1 s, no jitter, no cap on the backoff.* With three attempts there are
+  only two waits, so a cap could never trigger. Jitter exists to stop many clients retrying in
+  step; this is one client making calls in turn.
+- *`Retry-After` is obeyed, capped at 30 s.* The cap guards against a server asking for an
+  hour; the deadline still decides whether there is time left.
+- *403 is not retryable — except once.* Our 403s were intermittent, so a first one is retried
+  as a deliberate, commented, temporary exception in the loop (not in the error type, which
+  keeps the permanent rule). A second 403 gives up.
+
+**Testing without waiting.** The loop takes injectable `sleep_fn` and `clock_fn`, the same shape
+as `verify_recovery`, so the tests record the waits (`[0.5, 1.0]`) and move a fake clock to
+within seconds of the deadline instead of sleeping. 12 tests pin the rules above, including the
+easy-to-misread one: `403, 403, 200` makes two calls and fails, because the exception allows one
+retry, not two.
+
+**Retries are visible.** Each call records `provider.attempts` on the span it runs inside, and
+`provider.failure_reasons` (a short entry per failed attempt) when any failed — written once in
+a `finally` so no exit path can skip it. Checked with a fake span; **not yet seen in the real
+Opik UI.**
+
+**What this does not do:** it does not explain the 403. The retry is a mitigation, and the logged
+body is the instrument; until a real 403 is caught with its body, the cause is unknown and the
+403 exception stays marked temporary.
