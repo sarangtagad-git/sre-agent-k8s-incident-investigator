@@ -14,6 +14,7 @@ import logging
 import time
 
 import httpx
+from opentelemetry import trace
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +106,11 @@ def _post_once(settings, payload: dict, timeout: float) -> dict:
         ) from exc
 
 
+def _reason(err: ProviderError) -> str:
+    """Short form for the span: the status, or what went wrong when nothing answered."""
+    return str(err.status) if err.status is not None else (err.note or "no answer")
+
+
 def post_chat_completion(
     settings, payload: dict, *, timeout: float = 90, sleep_fn=None, clock_fn=time.monotonic
 ) -> dict:
@@ -114,32 +120,45 @@ def post_chat_completion(
     Retry-After (capped at 30 s) if that is longer, and gives up rather than wait past a
     120 s deadline. Raises ProviderError when it gives up. `sleep_fn`/`clock_fn` exist so
     tests can run without really waiting (same idea as verify_recovery).
+
+    Records `provider.attempts` (always) and `provider.failure_reasons` (one short entry
+    per failed attempt, only if there were any) on the span the caller is inside, so a
+    retried call is visible in Opik.
     """
     sleep_fn = sleep_fn or time.sleep  # looked up at call time, so tests can patch it
     started = clock_fn()
+    span = trace.get_current_span()  # the span of whichever call site we are inside
     seen_403 = False
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
-        try:
-            return _post_once(settings, payload, timeout)
-        except ProviderError as err:
-            # TEMPORARY: our 403s have been intermittent and unexplained, so retry the
-            # first one once and log its body. Remove once the cause is known.
-            is_first_403 = err.status == 403 and not seen_403
-            seen_403 = seen_403 or err.status == 403
+    attempt, reasons = 0, []  # set before the loop so `finally` can always read them
+    try:
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                return _post_once(settings, payload, timeout)
+            except ProviderError as err:
+                reasons.append(_reason(err))  # first, so every failure is listed
 
-            if attempt == _MAX_ATTEMPTS or (not err.retryable and not is_first_403):
-                raise
+                # TEMPORARY: our 403s have been intermittent and unexplained, so retry the
+                # first one once and log its body. Remove once the cause is known.
+                is_first_403 = err.status == 403 and not seen_403
+                seen_403 = seen_403 or err.status == 403
 
-            wait = _BACKOFF_START * 2 ** (attempt - 1)
-            if err.retry_after is not None:
-                wait = max(wait, min(err.retry_after, _RETRY_AFTER_CAP))
+                if attempt == _MAX_ATTEMPTS or (not err.retryable and not is_first_403):
+                    raise
 
-            if clock_fn() - started + wait > _DEADLINE:
-                raise
+                wait = _BACKOFF_START * 2 ** (attempt - 1)
+                if err.retry_after is not None:
+                    wait = max(wait, min(err.retry_after, _RETRY_AFTER_CAP))
 
-            log.warning(
-                "provider call failed (attempt %d/%d), retrying in %.1fs: %s",
-                attempt, _MAX_ATTEMPTS, wait, err,
-            )
-            sleep_fn(wait)
-    raise AssertionError("unreachable: the last attempt returns or raises")  # for type checkers
+                if clock_fn() - started + wait > _DEADLINE:
+                    raise
+
+                log.warning(
+                    "provider call failed (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt, _MAX_ATTEMPTS, wait, err,
+                )
+                sleep_fn(wait)
+        raise AssertionError("unreachable: the last attempt returns or raises")  # for type checkers
+    finally:  # runs on return AND on raise, so no exit path can skip it
+        span.set_attribute("provider.attempts", attempt)
+        if reasons:
+            span.set_attribute("provider.failure_reasons", reasons)

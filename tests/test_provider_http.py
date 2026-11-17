@@ -270,3 +270,42 @@ def test_gives_up_instead_of_waiting_past_the_deadline(monkeypatch):
     with pytest.raises(ProviderError) as err:
         _call(sleep_fn=waits.append, clock_fn=lambda: next(times))
     assert err.value.status == 429 and len(calls) == 1 and waits == []
+
+
+# --- span note ----------------------------------------------------------------------------
+
+
+class _FakeSpan:
+    def __init__(self):
+        self.attrs = {}
+
+    def set_attribute(self, key, value):
+        self.attrs[key] = value
+
+
+def _spy_span(monkeypatch):
+    span = _FakeSpan()
+    monkeypatch.setattr("sre_agent.agent.provider_http.trace.get_current_span", lambda: span)
+    return span
+
+
+def test_span_records_attempts_and_every_failure(monkeypatch):
+    span = _spy_span(monkeypatch)
+    _sequence(monkeypatch, _resp(503, text="busy"), _resp(401, text="bad key"))
+    with pytest.raises(ProviderError):
+        _call(sleep_fn=lambda _s: None)
+    assert span.attrs == {"provider.attempts": 2, "provider.failure_reasons": ["503", "401"]}
+
+
+def test_span_has_no_reasons_when_the_first_try_works(monkeypatch):
+    span = _spy_span(monkeypatch)
+    _sequence(monkeypatch, _resp(200, json={"ok": True}))
+    _call(sleep_fn=lambda _s: None)
+    assert span.attrs == {"provider.attempts": 1}
+
+
+def test_span_names_the_no_answer_error(monkeypatch):
+    span = _spy_span(monkeypatch)
+    _sequence(monkeypatch, httpx.ReadTimeout("slow"), _resp(200, json={"ok": True}))
+    _call(sleep_fn=lambda _s: None)
+    assert span.attrs["provider.failure_reasons"] == ["no answer: ReadTimeout"]
