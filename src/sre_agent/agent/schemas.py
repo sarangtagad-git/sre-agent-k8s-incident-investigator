@@ -162,6 +162,13 @@ class RunResult(BaseModel):
     cache_write_tokens: int = 0
     cache_read_tokens: int = 0
     output_tokens: int = 0
+    # The open model's tokens (GATHER_MODEL / ALL_STAGES_MODEL), kept apart from the Claude
+    # counts above: those feed the cache-economics view, and the two models price differently.
+    open_input_tokens: int = 0
+    open_output_tokens: int = 0
+    # Which models produced this run, e.g. "claude", "gather:<model>", "all:<model>". None on
+    # recordings made before this field existed — an honest "unknown", not a guess.
+    run_config: str | None = None
     cost_usd: float = 0.0
     duration_s: float = 0.0
 

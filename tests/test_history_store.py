@@ -132,6 +132,12 @@ def test_migration_adds_verification_columns_to_old_db(db_path):
     # Simulate a pre-Phase-11 DB: same table minus both new columns.
     old_schema = (
         history_store._SCHEMA
+        # the run_config / open-token columns came after Phase 11: strip them first so
+        # verification_detail is the last column again
+        .replace(
+            ",\n    run_config TEXT,\n    open_input_tokens INTEGER,\n    open_output_tokens INTEGER\n)",
+            "\n)",
+        )
         .replace("    verification_status TEXT,\n", "")
         .replace("    verification_detail TEXT\n", "")
         .replace(",\n)", "\n)")  # drop the now-trailing comma after prior_incidents_json
@@ -186,3 +192,61 @@ class TestFindRelatedRuns:
         found = history_store.find_related_runs("boutique", "redis-cart", limit=2)
         assert len(found) == 2
         assert found[0]["started_at"] == "2026-07-03T00:00:00"
+
+
+# --- run config + the open model's own tokens ---------------------------------------------
+
+
+def test_save_run_records_run_config_and_open_model_tokens(db_path):
+    result = _result().model_copy(
+        update={"run_config": "all:deepseek/deepseek-v4.1-flash",
+                "open_input_tokens": 12_000, "open_output_tokens": 800}
+    )
+    run_id = history_store.save_run(result, namespace="boutique", workload=None,
+                                    alert="x", mode="eval")
+    row = history_store.get_run(run_id)
+    assert row["run_config"] == "all:deepseek/deepseek-v4.1-flash"
+    assert (row["open_input_tokens"], row["open_output_tokens"]) == (12_000, 800)
+    # The open model's tokens must NOT leak into the Claude columns the cache view reads.
+    assert row["input_tokens"] == 0 and row["output_tokens"] == 0
+
+
+def test_a_result_without_a_config_stays_unknown(db_path):
+    # e.g. a recording made before this field existed: None, not a guessed "claude".
+    run_id = history_store.save_run(_result(), namespace="boutique", workload=None,
+                                    alert="x", mode="eval")
+    assert history_store.get_run(run_id)["run_config"] is None
+
+
+def test_migration_adds_the_config_columns_and_old_rows_stay_null(db_path):
+    old_schema = history_store._SCHEMA.replace(
+        ",\n    run_config TEXT,\n    open_input_tokens INTEGER,\n    open_output_tokens INTEGER\n)",
+        "\n)",
+    )
+    assert "run_config" not in old_schema  # guard: the replace actually removed them
+    conn = sqlite3.connect(db_path)
+    conn.execute(old_schema)
+    conn.execute(
+        "INSERT INTO runs (id, started_at, duration_s, namespace, mode) "
+        "VALUES ('old', '2026-01-01T00:00:00', 1.0, 'boutique', 'eval')"
+    )
+    conn.commit()
+    conn.close()
+
+    new_id = history_store.save_run(
+        _result().model_copy(update={"run_config": "claude"}),
+        namespace="boutique", workload=None, alert="x", mode="eval",
+    )
+    assert history_store.get_run(new_id)["run_config"] == "claude"
+    old = history_store.get_run("old")
+    assert old["run_config"] is None and old["open_input_tokens"] is None
+
+
+def test_run_config_label_names_the_models_in_use():
+    from types import SimpleNamespace
+
+    from sre_agent.agent.graph import _run_config_label
+
+    assert _run_config_label(SimpleNamespace(gather_model="", all_stages_model="")) == "claude"
+    assert _run_config_label(SimpleNamespace(gather_model="m", all_stages_model="")) == "gather:m"
+    assert _run_config_label(SimpleNamespace(gather_model="m", all_stages_model="m")) == "all:m"

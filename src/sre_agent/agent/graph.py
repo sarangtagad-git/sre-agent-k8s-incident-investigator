@@ -283,6 +283,15 @@ def _estimate_gather_cost(gather_totals: dict, settings) -> float:
     return (gather_totals["input"] * price_in + gather_totals["output"] * price_out) / 1e6
 
 
+def _run_config_label(settings) -> str:
+    """Which models this run used, as one readable string stored with the result."""
+    if settings.all_stages_model:
+        return f"all:{settings.all_stages_model}"
+    if settings.gather_model:
+        return f"gather:{settings.gather_model}"
+    return "claude"
+
+
 def _hypotheses_for_report(ranked: list[Hypothesis]) -> str:
     """Re-serialize the ranked hypotheses for propose's prompt tail. REPORT_INSTRUCTION
     uses the full hypothesis (incl. `supporting`) only for the top one it writes up;
@@ -853,6 +862,9 @@ def investigate(incident: IncidentContext, verbose: bool = False) -> RunResult:
             cache_write_tokens=totals["cache_write"],
             cache_read_tokens=totals["cache_read"],
             output_tokens=totals["output"],
+            open_input_tokens=gather_totals["input"],
+            open_output_tokens=gather_totals["output"],
+            run_config=_run_config_label(settings),
             cost_usd=_estimate_cost(totals, settings.agent_model)
             + _estimate_gather_cost(gather_totals, settings),
             duration_s=time.perf_counter() - start,

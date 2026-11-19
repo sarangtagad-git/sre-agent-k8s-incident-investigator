@@ -49,7 +49,10 @@ CREATE TABLE IF NOT EXISTS runs (
     eval_checks_json TEXT,
     prior_incidents_json TEXT,
     verification_status TEXT,
-    verification_detail TEXT
+    verification_detail TEXT,
+    run_config TEXT,
+    open_input_tokens INTEGER,
+    open_output_tokens INTEGER
 )
 """
 
@@ -87,6 +90,13 @@ def _connect() -> sqlite3.Connection:
         conn.execute("ALTER TABLE runs ADD COLUMN verification_detail TEXT")
     except sqlite3.OperationalError:
         pass  # column already exists
+    # Which models ran, and the open model's own tokens. NULL for every row that predates
+    # this — "we don't know", never a guess (the Claude token columns above stay Claude-only).
+    for column in ("run_config TEXT", "open_input_tokens INTEGER", "open_output_tokens INTEGER"):
+        try:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {column}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     return conn
 
 
@@ -118,8 +128,9 @@ def save_run(
                 input_tokens, cache_write_tokens, cache_read_tokens, output_tokens,
                 approval_status, resolved, triggered_by, evidence_json,
                 correlation_json, hypotheses_json, report_json, eval_checks_json,
-                prior_incidents_json, verification_status, verification_detail
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                prior_incidents_json, verification_status, verification_detail,
+                run_config, open_input_tokens, open_output_tokens
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 run_id,
@@ -149,6 +160,9 @@ def save_run(
                 json.dumps([p.model_dump() for p in result.prior_incidents]),
                 verification_status,
                 verification_detail,
+                result.run_config,
+                result.open_input_tokens,
+                result.open_output_tokens,
             ),
         )
         conn.commit()
