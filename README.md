@@ -197,10 +197,22 @@ missing. An error path that nothing surfaces is indistinguishable from no error 
   `kubectl uncordon` is now allowed, scoped to one named node with no flags.)
 - **4 stretch incidents** (`pvc_pending`, `rbac_denied`, `hpa_stuck`, `cronjob_failing`)
   each need a new Kubernetes resource type in the cluster first.
-- **The cheaper-gather-model swap ships dormant.** An optional open model (Qwen via
-  OpenRouter, `GATHER_MODEL` in `.env.example`) measured ~17–18% cheaper on simple
-  incidents with no quality loss, but one `cascade` run cost +215% when it produced an
-  oversized transcript. Unset by default; not yet decided.
+- **The open-model option ships dormant, and the evidence is mixed.** Two optional settings
+  route the pipeline to an open model through OpenRouter: `GATHER_MODEL` (gather step only)
+  and `ALL_STAGES_MODEL` (all four stages, "config C"), both in `.env.example`. Swapping only
+  the gather step *raised* cost with DeepSeek, because Claude's own prompt cache doesn't carry
+  over to a foreign transcript. Config C, reviewed on 10 incidents (October 2026), is the
+  better case:
+
+  | | Claude | Config C |
+  |---|---|---|
+  | Passed | 11 of 11 (saved runs re-scored) | 9 of 10, after retries |
+  | Same category as Claude | — | 7 of 10 |
+  | Average cost per run | $0.136 | $0.014 (~10× less) |
+  | Average time | 104 s | 89 s (~14% faster) |
+  | Weak spots | — | `oom_killed` and `cpu_throttled` category; one fix not hand-checked |
+
+  Unset by default, and I haven't decided whether to turn it on.
 - **Memory's match key is exact namespace + workload.** An alert carrying a pod label but
   no deployment label leaves `workload=None` and can never be recalled.
 - **Verification is narrow.** It polls only the workload named in the remediation, not

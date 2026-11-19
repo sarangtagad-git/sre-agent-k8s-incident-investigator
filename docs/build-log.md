@@ -55,6 +55,12 @@ events, and `node_down` must now name the drained node in the root cause itself.
 [incident-taxonomy-plan.md](incident-taxonomy-plan.md#node_down-revisited--target-attribution-2026-09-20)
 and [engineering-log.md](engineering-log.md#7-the-drained-node-that-hosts-nothing--and-a-fix-i-couldnt-fully-prove).
 
+**Open-model option and provider calls.** Built an all-stages open-model mode ("config C")
+and reviewed it on 10 incidents; results are in the README's Known gaps. Every provider call
+now goes through one helper that keeps the error body, retries transient failures within a
+time limit, and records the attempts on the trace — story in
+[engineering-log.md](engineering-log.md#8-a-provider-error-whose-explanation-i-threw-away).
+
 **One-command dev environment.** `make up` brings up the cluster, Opik, the Boutique
 port-forward, and the dashboard together, polling until all are ready. `make up-lite`
 skips Opik, which is about 3–4 GB lighter.

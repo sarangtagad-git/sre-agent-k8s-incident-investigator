@@ -205,3 +205,29 @@ Opik UI.**
 **What this does not do:** it does not explain the 403. The retry is a mitigation, and the logged
 body is the instrument; until a real 403 is caught with its body, the cause is unknown and the
 403 exception stays marked temporary.
+
+## 9. A failing eval row that wasn't a model failure
+
+One row in the run history is a FAIL for the open-model configuration (config C) on the
+`image_pull` incident: `47673743a658`, confidence 0.55. The diagnosis and the proposed fix in it
+were correct — category `rollout`, the right root cause, and `kubectl rollout undo`, which the
+remediation gate accepts. It failed because the cluster broke underneath the run: the
+control-plane node reported "Rebooted 11s ago", the apiserver answered 503, and six tool calls
+died on it. The `no_tool_errors` check — a crashed tool fails the incident, whether or not that
+tool mattered — fired exactly as designed.
+
+I had started Opik's Docker pulls while that eval was running, and the node restart lines up
+with them. I didn't capture proof beyond the timing, so I won't claim more than that. A clean
+re-run 17 minutes later passed at 0.95.
+
+I kept the row. Deleting it would have lifted the pass rate by about 1.5 points (40/53 → 40/52
+when this was written), but it would have hidden the one run where the environment, not the
+model, decided the outcome, and a history is only worth something if I don't edit it to look
+better. This entry is the explanation for anyone who sees a config C FAIL followed by a PASS and
+reads it as flakiness.
+
+**The lesson:** starting heavy background work on the machine that is running a live eval is a
+way to fail the eval, and the harness can't tell it apart from a real failure. Bring Opik up
+only after the cluster has settled, and never during a run. `scripts/start-env.sh` doesn't
+enforce this — it launches Opik in parallel with everything else — so for now it is a rule I
+follow by hand: start Boutique and the dashboard first, wait for the pods, then start Opik.
